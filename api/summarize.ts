@@ -1,10 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { buildPrompt, mapResponse, requestSchema, summarySchema } from './_lib/summarizePrompt';
 
-export const config = { maxDuration: 300 };
 const MAX_BYTES = 4 * 1024 * 1024;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -30,8 +29,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_ANON_KEY;
   if (!url || !key) return res.status(500).json({ error: '인증 서버 설정이 누락되었습니다.' });
+  let supabase: SupabaseClient;
   try {
-    const supabase = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+    supabase = createClient(url, key, {
+      global: { headers: { Authorization: `Bearer ${match[1]}` } },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
     const { data, error } = await supabase.auth.getUser(match[1]);
     if (error || !data.user) return res.status(401).json({ error: '유효하지 않은 로그인입니다.' });
   } catch {
@@ -40,17 +43,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const parsed = requestSchema.safeParse(body);
   if (!parsed.success) return res.status(400).json({ error: '요약 요청 형식이 올바르지 않습니다.' });
   if (!process.env.ANTHROPIC_API_KEY) return res.status(500).json({ error: '요약 서버 설정이 누락되었습니다.' });
+  const configuredLimit = Number(process.env.SUMMARY_DAILY_LIMIT ?? 20);
+  const dailyLimit = Number.isInteger(configuredLimit) && configuredLimit > 0 && configuredLimit <= 2147483647
+    ? configuredLimit : 20;
+  try {
+    const { data: allowed, error } = await supabase.rpc('consume_summary_quota', { p_limit: dailyLimit });
+    if (error || typeof allowed !== 'boolean') throw new Error('Quota unavailable');
+    if (!allowed) return res.status(429).json({ error: '오늘의 요약 사용 한도를 초과했습니다.' });
+  } catch {
+    return res.status(503).json({ error: '요약 사용 한도를 확인하지 못했습니다. 다시 시도해 주세요.' });
+  }
   try {
     const { system, content } = buildPrompt(parsed.data);
-    const client = new Anthropic();
+    const client = new Anthropic({ timeout: 240_000, maxRetries: 1 });
     const stream = client.messages.stream({
-      model: 'claude-opus-5-5', max_tokens: 16000,
+      model: 'claude-opus-5-5', max_tokens: 6000,
       output_config: { effort: 'medium', format: zodOutputFormat(summarySchema) },
       system, messages: [{ role: 'user', content }],
     });
     // The SDK parses structured text before finalMessage resolves. A refusal or
     // truncated JSON can throw there, so preserve the raw terminal reason too.
-    let terminalReason: string | null = null;
+    let terminalReason = null as string | null;
     stream.on('streamEvent', event => {
       if (event.type === 'message_delta' && event.delta.stop_reason) terminalReason = event.delta.stop_reason;
     });

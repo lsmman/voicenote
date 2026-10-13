@@ -11,16 +11,19 @@ test('serial uploads preserve sequence, retry at 2s then 4s, and keep audio', as
   await f.deps.store.addChunk(chunk('note', 1));
   await f.deps.store.addChunk(chunk());
   const upload = jest.mocked(f.deps.sync.uploadChunk);
-  upload.mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline'));
+  upload.mockImplementation(async c => {
+    if (c.seq === 0 && upload.mock.calls.filter(([item]) => item.seq === 0).length <= 2) throw new Error('offline');
+    return `remote/${c.noteId}/${c.seq}`;
+  });
   const queue = createUploadQueue(f.deps);
   await Promise.all([queue.resume(), queue.resume()]);
-  expect(upload.mock.calls.map(([c]) => c.seq)).toEqual([0]);
+  expect(upload.mock.calls.map(([c]) => c.seq)).toEqual([0, 1]);
   await jest.advanceTimersByTimeAsync(1999);
-  expect(upload).toHaveBeenCalledTimes(1);
-  await jest.advanceTimersByTimeAsync(1);
   expect(upload).toHaveBeenCalledTimes(2);
+  await jest.advanceTimersByTimeAsync(1);
+  expect(upload).toHaveBeenCalledTimes(3);
   await jest.advanceTimersByTimeAsync(4000);
-  expect(upload.mock.calls.map(([c]) => c.seq)).toEqual([0, 0, 0, 1]);
+  expect(upload.mock.calls.map(([c]) => c.seq)).toEqual([0, 1, 0, 0]);
   expect((await f.deps.store.listChunks('note')).every(c => c.remotePath && c.uploadedAt && c.localPath)).toBe(true);
   expect(f.deps.store.deleteAudioBlob).not.toHaveBeenCalled();
 });
@@ -60,4 +63,48 @@ test('explicit cleanup requires done and every chunk confirmed uploaded', async 
   await createUploadQueue(f.deps).resume(); await cleanup('note');
   expect(f.deps.store.deleteAudioBlob).toHaveBeenCalledWith('note/0');
   expect(f.chunks.get('note/0')?.localPath).toBeNull();
+});
+
+test.each([
+  new Error('ENOENT: no such file'), new Error('오디오 파일이 없습니다.'),
+  new Error('동기화가 설정되지 않았습니다'), new Error('HTTP 413'),
+  { status: 401 }, { statusCode: '404' }, { response: { status: 429 } },
+])('permanent upload error %p is skipped without blocking following chunks', async error => {
+  const f = fakes(); await f.deps.store.createNote(note());
+  await f.deps.store.addChunk(chunk()); await f.deps.store.addChunk(chunk('note', 1));
+  jest.mocked(f.deps.sync.uploadChunk).mockRejectedValueOnce(error);
+  const q = createUploadQueue(f.deps); await q.resume(); await q.resume(true);
+  expect(jest.mocked(f.deps.sync.uploadChunk).mock.calls.map(([c]) => c.seq)).toEqual([0, 1]);
+  expect(f.chunks.get('note/0')?.remotePath).toBeNull();
+  expect(f.chunks.get('note/1')?.remotePath).toBeTruthy();
+});
+
+test('transient backoff is per chunk across notes and force resets it', async () => {
+  const f = fakes();
+  for (const id of ['a', 'b']) { await f.deps.store.createNote(note(id)); await f.deps.store.addChunk(chunk(id)); }
+  jest.mocked(f.deps.sync.uploadChunk).mockRejectedValueOnce(new Error('HTTP 503'));
+  const q = createUploadQueue(f.deps); await q.resume(); await q.resume();
+  expect(jest.mocked(f.deps.sync.uploadChunk).mock.calls.map(([c]) => c.noteId)).toEqual(['a', 'b']);
+  await q.resume({ force: true });
+  expect(f.chunks.get('a/0')?.remotePath).toBeTruthy();
+});
+
+test('upload times out after 120s then retries without retaining late upload results', async () => {
+  const f = fakes(); await f.deps.store.createNote(note());
+  await f.deps.store.addChunk(chunk()); await f.deps.store.addChunk(chunk('note', 1));
+  let release!: (path: string) => void;
+  jest.mocked(f.deps.sync.uploadChunk).mockImplementationOnce(() => new Promise(r => { release = r; }));
+  const q = createUploadQueue(f.deps); const work = q.resume();
+  await jest.advanceTimersByTimeAsync(120_000); await work;
+  expect(f.chunks.get('note/0')?.remotePath).toBeNull();
+  expect(f.chunks.get('note/1')?.remotePath).toBeTruthy();
+  release('late'); await Promise.resolve();
+  expect(f.chunks.get('note/0')?.remotePath).toBeNull();
+  await jest.advanceTimersByTimeAsync(2000);
+  expect(f.chunks.get('note/0')?.remotePath).toBe('remote/note/0');
+});
+
+test('null local path skips upload without calling the service', async () => {
+  const f = fakes(); await f.deps.store.createNote(note()); await f.deps.store.addChunk({ ...chunk(), localPath: null });
+  await createUploadQueue(f.deps).resume(); expect(f.deps.sync.uploadChunk).not.toHaveBeenCalled();
 });

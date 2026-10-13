@@ -8,6 +8,10 @@ const mockActivate = jest.fn<() => Promise<void>>().mockResolvedValue(undefined)
 const mockDeactivate = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
 let mockFailOverlap = false;
 let mockFail16k = false;
+let mockDuration: number | undefined;
+let mockHangStop = false;
+let mockHangPrepare = false;
+let mockHangMetadata = false;
 class MockNativeRecorder {
   static instances: MockNativeRecorder[] = [];
   uri: string;
@@ -22,6 +26,7 @@ class MockNativeRecorder {
   }
   addListener(_event: string, listener: typeof this.listener) { this.listener = listener; return { remove: () => { this.listener = undefined; } }; }
   async prepareToRecordAsync(config: { sampleRate: number }) {
+    if (mockHangPrepare) await new Promise(() => {});
     if (mockFail16k && config.sampleRate === 16_000) throw new Error('Unsupported sample rate');
     if (mockFailOverlap && MockNativeRecorder.instances.some(item => item.recording)) throw new Error('Microphone busy');
     this.config = config;
@@ -31,7 +36,7 @@ class MockNativeRecorder {
     return { isRecording: this.recording, canRecord: true, durationMillis: this.recording ? performance.now() - this.startedAt : 0,
       metering: -20, url: this.uri, mediaServicesDidReset: false };
   }
-  async stop() { this.recording = false; }
+  async stop() { this.recording = false; if (mockHangStop) await new Promise(() => {}); }
   release() { this.released = true; }
 }
 jest.mock('expo-audio', () => ({
@@ -47,6 +52,13 @@ jest.mock('expo-file-system', () => {
     create() {}
   }
   class File extends Directory {
+    async arrayBuffer() {
+      if (mockHangMetadata) await new Promise(() => {});
+      if (mockDuration === undefined) throw Error('metadata unavailable');
+      const buffer = new ArrayBuffer(28); const view = new DataView(buffer);
+      view.setUint32(0, 28); new Uint8Array(buffer, 4, 4).set([109, 118, 104, 100]);
+      view.setUint32(20, 1000); view.setUint32(24, mockDuration); return buffer;
+    }
     get exists() { return mockFiles.has(this.uri); }
     async move(destination: { uri: string }) { await mockMove(destination); mockFiles.delete(this.uri); mockFiles.add(destination.uri); }
     delete() { mockFiles.delete(this.uri); }
@@ -56,8 +68,10 @@ jest.mock('expo-file-system', () => {
 // Require after mock classes initialize; imports are hoisted by Babel.
 const { recorder } = require('../index.native') as typeof import('../index.native');
 beforeEach(() => {
+  require('react-native').AppState.addEventListener.mockImplementation(() => ({ remove: jest.fn() }));
   jest.useFakeTimers(); MockNativeRecorder.instances = []; mockFiles.clear();
   mockMove.mockReset().mockResolvedValue(undefined); mockFailOverlap = false; mockFail16k = false;
+  mockDuration = undefined; mockHangStop = false; mockHangPrepare = false; mockHangMetadata = false;
   mockActivate.mockClear(); mockDeactivate.mockClear();
 });
 afterEach(async () => { await recorder.stop(); jest.useRealTimers(); });
@@ -71,10 +85,10 @@ describe('native recorder', () => {
     let moved!: () => void;
     mockMove.mockImplementationOnce(() => new Promise<void>(resolve => { moved = resolve; }));
     const stop = recorder.stop();
-    for (let i = 0; i < 10; i++) await Promise.resolve();
+    for (let i = 0; i < 100; i++) await Promise.resolve();
     expect(chunks).toHaveLength(0);
     moved(); await stop;
-    expect(chunks[0]).toMatchObject({ durationMs: 1000, localPath: 'file:///documents/recordings/native-note/0.m4a', mimeType: 'audio/mp4' });
+    expect(chunks[0]).toMatchObject({ durationMs: 1000, localPath: 'recordings/native-note/0.m4a', mimeType: 'audio/mp4' });
     expect(MockNativeRecorder.instances.every(item => item.released)).toBe(true);
     expect(mockDeactivate).toHaveBeenCalled();
   });
@@ -114,4 +128,69 @@ describe('native recorder', () => {
     expect(onChunk).toHaveBeenCalledTimes(1);
     expect(mockFiles.has('file:///documents/recordings/note/0.m4a')).toBe(true);
   });
+});
+
+const flushNative = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
+it('reads finalized M4A duration and resolves relative paths against Documents', async () => {
+  mockDuration = 750;
+  const onChunk = jest.fn(); await recorder.start('note', { onChunk });
+  await jest.advanceTimersByTimeAsync(1000); await recorder.stop();
+  expect(onChunk.mock.calls[0][0]).toMatchObject({ durationMs: 750, localPath: 'recordings/note/0.m4a' });
+  const { resolveLocalPath } = require('../paths.native');
+  expect(resolveLocalPath((onChunk.mock.calls[0][0] as AudioChunk).localPath)).toBe('file:///documents/recordings/note/0.m4a');
+  expect(resolveLocalPath('file:///legacy.m4a')).toBe('file:///legacy.m4a');
+});
+it('retains missing-file duration and retries when the file reappears', async () => {
+  const onChunk = jest.fn(), onWarning = jest.fn(); await recorder.start('note', { onChunk, onWarning });
+  await jest.advanceTimersByTimeAsync(1000);
+  const uri = MockNativeRecorder.instances[0].uri; mockFiles.delete(uri);
+  await recorder.pause(); expect(onChunk).not.toHaveBeenCalled();
+  expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({ reason: expect.stringContaining('retained 1000ms') }));
+  mockFiles.add(uri); await jest.advanceTimersByTimeAsync(1000);
+  expect((onChunk.mock.calls[0][0] as AudioChunk).durationMs).toBe(1000);
+});
+it('retries a failed native move while recording continues', async () => {
+  const onChunk = jest.fn(); mockMove.mockRejectedValueOnce(Error('disk busy'));
+  await recorder.start('note', { onChunk }); await jest.advanceTimersByTimeAsync(30_000);
+  expect(recorder.getState()).toBe('recording'); expect(onChunk).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(1000); expect(onChunk).toHaveBeenCalledTimes(1);
+});
+it('native stop timeout releases the recorder and salvages its file', async () => {
+  const onChunk = jest.fn(), onWarning = jest.fn(); await recorder.start('note', { onChunk, onWarning });
+  await jest.advanceTimersByTimeAsync(1000); mockHangStop = true;
+  const stopping = recorder.stop(); await jest.advanceTimersByTimeAsync(10_000); await stopping;
+  expect(MockNativeRecorder.instances[0].released).toBe(true);
+  expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({ reason: expect.stringContaining('timed out') }));
+  expect(onChunk).toHaveBeenCalledTimes(1);
+});
+it('native prepare timeout releases its underlying native object', async () => {
+  mockHangPrepare = true;
+  const starting = recorder.start('note', {}); const rejected = expect(starting).rejects.toThrow('timed out');
+  await jest.advanceTimersByTimeAsync(10_000); await rejected;
+  expect(MockNativeRecorder.instances[0].released).toBe(true);
+});
+it('AppState active and recordingStatusUpdate run tick without waiting for timers', async () => {
+  const { AppState } = require('react-native');
+  let changed!: (state: string) => void;
+  const remove = jest.fn();
+  const spy = jest.spyOn(AppState, 'addEventListener').mockImplementation((_event, cb) => {
+    changed = cb as (state: string) => void; return { remove };
+  });
+  const onChunk = jest.fn(); await recorder.start('note', { onChunk });
+  jest.setSystemTime(Date.now() + 30_000);
+  // Fake native capture clock can advance while the JS interval is suspended.
+  const first = MockNativeRecorder.instances[0]; first.startedAt = performance.now() - 30_000;
+  changed('active'); await flushNative(); expect(onChunk).toHaveBeenCalledTimes(1);
+  const second = MockNativeRecorder.instances[1]; second.startedAt = performance.now() - 30_000;
+  second.listener?.({ hasError: false, error: '', url: second.uri });
+  await flushNative(); expect(onChunk).toHaveBeenCalledTimes(2);
+  await recorder.stop(); expect(remove).toHaveBeenCalled(); spy.mockRestore();
+});
+
+it('metadata timeout still persists the file with its last observed duration', async () => {
+  const onChunk = jest.fn(); await recorder.start('metadata', { onChunk });
+  await jest.advanceTimersByTimeAsync(1000); mockHangMetadata = true;
+  const stopping = recorder.stop(); await jest.advanceTimersByTimeAsync(10_000); await stopping;
+  expect(onChunk).toHaveBeenCalledWith(expect.objectContaining({ durationMs: 1000, localPath: 'recordings/metadata/0.m4a' }));
+  expect(MockNativeRecorder.instances[0].released).toBe(true);
 });

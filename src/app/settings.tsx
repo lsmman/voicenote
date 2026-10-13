@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import { engine } from '../services';
 import { getModelId, setModelId } from '../core/settings';
 import { signOut } from '../sync/auth';
+import { isSyncConfigured } from '../sync';
 import { useSession } from '../ui/useSession';
 import type { ModelInfo, ModelDownloadProgress } from '../transcriber/types';
 import { Button, Notice, Screen } from '../ui/primitives';
@@ -44,6 +45,6 @@ export default function SettingsScreen() {
       </View>;
     })}
     <Text style={[styles.heading, { color: c.text }]}>계정</Text>
-    {loading ? <Notice text="계정 확인 중…" /> : session ? <View style={[styles.card, { backgroundColor: c.surface, borderColor: c.border }]}><Text style={[styles.body, { color: c.text }]}>{session.user.email}</Text><Button title="로그아웃" disabled={task.busy} onPress={() => { void task.run(() => signOut(), '로그아웃하지 못했어요. 다시 시도해 주세요.'); }} /></View> : <Button title="이메일로 로그인" onPress={() => router.push('/login')} />}
+    {!isSyncConfigured ? <Notice text="동기화 서버가 설정되지 않아 이 기기에만 저장됩니다" /> : loading ? <Notice text="계정 확인 중…" /> : session ? <View style={[styles.card, { backgroundColor: c.surface, borderColor: c.border }]}><Text style={[styles.body, { color: c.text }]}>{session.user.email}</Text><Button title="로그아웃" disabled={task.busy} onPress={() => { void task.run(() => signOut(), '로그아웃하지 못했어요. 다시 시도해 주세요.'); }} /></View> : <Button title="이메일로 로그인" onPress={() => router.push('/login')} />}
   </ScrollView></Screen>;
 }

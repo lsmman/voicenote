@@ -9,20 +9,23 @@ export function mergeSegments(
   chunkStartMs: number,
   noteId: string,
   newId: () => string,
+  seq?: number,
 ): Segment[] {
   const merged = [...existing];
   const boundary = existing[existing.length - 1]?.endMs ?? 0;
-  for (const item of [...incoming].sort((a, b) => a.startMs - b.startMs)) {
+  for (const { item, index } of incoming.map((item, index) => ({ item, index })).sort((a, b) => a.item.startMs - b.item.startMs)) {
     const start = chunkStartMs + item.startMs;
     const end = chunkStartMs + item.endMs;
     const text = normalize(item.text);
     if (!text || !Number.isFinite(start) || !Number.isFinite(end) || end < boundary - 300) continue;
+    const midpoint = (start + end) / 2;
+    if (merged.some(segment => midpoint >= segment.startMs && midpoint <= segment.endMs)) continue;
     const previous = merged[merged.length - 1];
     if (previous && start <= chunkStartMs + OVERLAP_MS && end <= chunkStartMs + OVERLAP_MS && end >= chunkStartMs - OVERLAP_MS &&
         start <= previous.endMs + 300 && normalize(previous.text).endsWith(text)) continue;
     const startMs = Math.max(0, start, previous?.endMs ?? 0);
     if (end <= startMs) continue;
-    merged.push({ id: newId(), noteId, startMs, endMs: end, text: item.text, speakerLabel: null, edited: false });
+    merged.push({ id: seq === undefined ? newId() : `${noteId}:${seq}:${index}`, noteId, startMs, endMs: end, text: item.text, speakerLabel: null, edited: false });
   }
   return merged;
 }

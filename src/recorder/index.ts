@@ -1,6 +1,6 @@
 import { store } from '../store';
-import { createRecorder, type Capture, type Driver } from './runtime';
-import type { Recorder, RecorderWarning } from './types';
+import { bounded, createRecorder, type CapturedAudio, type Capture, type Driver } from './runtime';
+import type { RecorderWarning } from './types';
 
 const mimeTypes = ['audio/webm;codecs=opus', 'audio/mp4'];
 let stream: MediaStream | null = null;
@@ -25,7 +25,7 @@ async function acquireWake() {
     if (!wantsWake || generation !== wakeGeneration) { await lock.release(); return; }
     wake = lock;
     lock.addEventListener('release', () => { if (wake === lock) wake = null; });
-  } catch (error) { warn({ kind: 'interrupted', reason: `Screen wake lock: ${String(error)}` }); }
+  } catch (error) { console.debug('Screen wake lock unavailable', error); }
   finally { requestingWake = false; }
 }
 function visibilityChanged() { void acquireWake(); }
@@ -63,18 +63,27 @@ const driver: Driver = {
     const media = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 48_000 });
     const slices: Blob[] = [];
     let startedAt = 0;
+    let audioStartedAt = 0;
+    let capturedMs = 0;
+    let finalDurationMs = 0;
     let started = false;
     let endedAt: number | null = null;
     let failure: string | undefined;
     let stopping: Promise<void> | null = null;
     let resolveStopped!: () => void;
     const stopped = new Promise<void>(resolve => { resolveStopped = resolve; });
-    media.ondataavailable = event => { if (event.data.size) slices.push(event.data); };
-    media.onstop = () => { endedAt ??= performance.now(); resolveStopped(); };
+    media.ondataavailable = event => {
+      if (event.data.size) slices.push(event.data);
+      if (Number.isFinite(event.timecode)) capturedMs = Math.max(capturedMs, event.timecode);
+    };
+    media.onstop = () => { endedAt ??= Date.now(); resolveStopped(); };
     media.onerror = () => { failure = 'MediaRecorder error'; };
     async function halt() {
       if (!stopping) {
-        endedAt ??= performance.now();
+        endedAt ??= Date.now();
+        finalDurationMs = capturedMs || (context && Number.isFinite(context.currentTime)
+          ? Math.max(0, (context.currentTime - audioStartedAt) * 1000)
+          : Math.max(0, endedAt - startedAt));
         if (media.state !== 'inactive') { media.stop(); stopping = stopped; }
         // An automatic stop queues final dataavailable BEFORE stop. Always wait
         // for that event if recording started, even when state is already inactive.
@@ -82,8 +91,23 @@ const driver: Driver = {
       }
       await stopping;
     }
+    function salvage(): CapturedAudio {
+      const blob = new Blob(slices, { type: media.mimeType || mimeType });
+      return {
+        durationMs: finalDurationMs, mimeType: blob.type,
+        async persist(noteId, seq) {
+          if (!blob.size) throw new Error('MediaRecorder returned an empty recording');
+          if (!store.putAudioBlob) throw new Error('Web recorder requires store.putAudioBlob');
+          const key = `${noteId}/${seq}`;
+          await store.putAudioBlob(key, blob);
+          return key;
+        },
+        async discard() {},
+      };
+    }
     return {
-      start() { media.start(5000); started = true; startedAt = performance.now(); },
+      salvage,
+      start() { media.start(5000); started = true; startedAt = Date.now(); audioStartedAt = context?.currentTime ?? 0; },
       sample() {
         let level: number | undefined;
         if (analyser && samples && context?.state === 'running') {
@@ -92,29 +116,30 @@ const driver: Driver = {
           for (const sample of samples) sum += sample * sample;
           level = Math.min(1, Math.sqrt(sum / samples.length));
         }
-        return { level, interrupted: failure ?? (media.state === 'inactive' ? 'MediaRecorder stopped unexpectedly' : undefined) };
+        return { level, durationMs: context && Number.isFinite(context.currentTime) ? Math.max(capturedMs, (context.currentTime - audioStartedAt) * 1000) : undefined, interrupted: failure ?? (media.state === 'inactive' ? 'MediaRecorder stopped unexpectedly' : undefined) };
       },
       async stop() {
-        await halt();
+        try { await bounded(halt(), 'web stop'); }
+        catch (error) { warn({ kind: 'interrupted', reason: String(error) }); }
         const blob = new Blob(slices, { type: media.mimeType || mimeType });
-        return {
-          durationMs: Math.max(0, (endedAt ?? performance.now()) - startedAt), mimeType: blob.type,
-          async persist(noteId, seq) {
-            if (!blob.size) throw new Error('MediaRecorder returned an empty recording');
-            if (!store.putAudioBlob) throw new Error('Web recorder requires store.putAudioBlob');
-            const key = `${noteId}/${seq}`;
-            await store.putAudioBlob(key, blob);
-            return key;
-          },
-          async discard() {},
-        };
+        let durationMs = finalDurationMs;
+        if (blob.size && context) {
+          try {
+            const decoded = await bounded(blob.arrayBuffer().then(bytes => context!.decodeAudioData(bytes)), 'blob duration');
+            if (Number.isFinite(decoded.duration)) durationMs = decoded.duration * 1000;
+          } catch { /* Browser codec support varies; retain capture time, wall time only as last fallback. */ }
+        }
+        finalDurationMs = durationMs;
+        return salvage();
       },
       async dispose() {
-        await halt();
+        // Never wait for a missing stop event during forced cleanup.
+        if (media.state !== 'inactive') { try { media.stop(); } catch { /* already lost */ } }
         media.ondataavailable = null; media.onstop = null; media.onerror = null;
       },
     };
   },
+  async prepareAhead() { return driver.prepare(); },
   async awake(active) {
     wantsWake = active;
     if (active) await acquireWake();
@@ -137,4 +162,4 @@ const driver: Driver = {
   },
 };
 
-export const recorder: Recorder = createRecorder(driver);
+export const recorder = createRecorder(driver);

@@ -1,3 +1,5 @@
+import { resample, webAudioWindows } from '../audio';
+import { downmixRange, overlapTail, pcmWindows, toPcm16 } from '../audio';
 import { concatAudio, downmix, mapWebSegments, prependOverlap, whisperTicksToMs, secondsToMs } from '../audio';
 import { getModel, listModels } from '../models';
 import { createSerialQueue } from '../serial';
@@ -70,4 +72,71 @@ test('progress aggregates files without double-counting repeated updates or aggr
   expect(callback).toHaveBeenLastCalledWith({ modelId: 'base-q5_1', receivedBytes: 70, totalBytes: 300 });
   report({ status: 'progress_total', name: 'repo', loaded: 70, total: 300, progress: 23, files: {} });
   expect(callback).toHaveBeenLastCalledWith({ modelId: 'base-q5_1', receivedBytes: 70, totalBytes: 300 });
+});
+
+
+test('PCM16 is clipped, signed little endian, with silence for NaN', () => {
+  const data = toPcm16(new Float32Array([-2, -1, -0.5, 0, 0.5, 1, 2, NaN]));
+  expect(Array.from(new Uint8Array(data))).toEqual([
+    0, 128, 0, 128, 0, 192, 0, 0, 0, 64, 255, 127, 255, 127, 0, 0,
+  ]);
+});
+
+function decoded(channels: Float32Array[]) {
+  return { length: channels[0].length, numberOfChannels: channels.length,
+    copyFromChannel: (out: Float32Array, channel: number, start = 0) => {
+      out.set(channels[channel].subarray(start, start + out.length));
+    } };
+}
+
+test('range downmix and overlap tail copy only requested frames', () => {
+  const source = decoded([new Float32Array([1, 0, -1]), new Float32Array([0, 1, 1])]);
+  expect(Array.from(downmixRange(source, 1, 3))).toEqual([0.5, 0]);
+  expect(() => downmixRange(source, -1, 3)).toThrow('range');
+  const audio = new Float32Array(32_000);
+  audio.fill(0.5, 16_000);
+  expect(overlapTail(decoded([audio]))).toEqual(new Float32Array(16_000).fill(0.5));
+});
+
+test('window offsets account for overlap, cap size at ten minutes, and preserve the final sample', () => {
+  const source = { length: 9_600_001, numberOfChannels: 1,
+    copyFromChannel: (out: Float32Array, _channel: number, start = 0) => {
+      out.fill(0.5);
+      if (start + out.length === 9_600_001) out[out.length - 1] = -1;
+    } };
+  const windows = pcmWindows(source, new Float32Array(16_000).fill(-0.5));
+  expect(windows.map(({ data, startMs }) => [data.byteLength, startMs]))
+    .toEqual([[19_200_000, -1000], [32_002, 599000]]);
+  expect(new DataView(windows[0].data).getInt16(0, true)).toBe(-16384);
+  expect(new DataView(windows[0].data).getInt16(32_000, true)).toBe(16384);
+  expect(new DataView(windows[1].data).getInt16(32_000, true)).toBe(-32768);
+  expect(pcmWindows(decoded([new Float32Array(0)]))).toEqual([]);
+});
+
+
+test.each([44100, 48000])('resamples actual %s Hz decoder output to 16 kHz', (rate) => {
+  const audio = Float32Array.from({ length: rate }, (_, i) => i / rate);
+  const result = resample(audio, rate);
+  expect(result).toHaveLength(16000);
+  expect(result[8000]).toBeCloseTo(0.5, 5);
+  expect(result[15999]).toBeCloseTo(15999 / 16000, 5);
+  expect(audio).toHaveLength(rate);
+});
+
+test('resampler handles empty, single sample, upsampling and invalid rates', () => {
+  expect(resample(new Float32Array(), 48000)).toHaveLength(0);
+  expect(Array.from(resample(new Float32Array([0, 1]), 8000))).toEqual([0, 0.5, 1, 1]);
+  expect(Array.from(resample(new Float32Array([0.5]), 16000, 32000))).toEqual([0.5, 0.5]);
+  expect(() => resample(new Float32Array(1), 0)).toThrow('sample rate');
+});
+
+test('web windows cap transfers, overlap one second and retain the final sample', () => {
+  const source = new Float32Array(9600001);
+  source[source.length - 1] = 0.75;
+  const windows = [...webAudioWindows(source, new Float32Array(16000))];
+  expect(windows.map(({ audio, startMs }) => [audio.length, startMs]))
+    .toEqual([[9600000, -1000], [32001, 598000]]);
+  expect(windows[1].audio.at(-1)).toBe(0.75);
+  expect(windows[0].audio.buffer).not.toBe(source.buffer);
+  expect(windows[1].audio.buffer).not.toBe(source.buffer);
 });

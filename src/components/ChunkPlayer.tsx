@@ -1,47 +1,63 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Platform, Text, View } from 'react-native';
-import { useAudioPlayer } from 'expo-audio';
+import { createAudioPlayer, type AudioPlayer, type AudioStatus } from 'expo-audio';
 import type { AudioChunk, Memo } from '../core/types';
 import { store, sync } from '../services';
 import { Button, Notice } from '../ui/primitives';
 import { styles, useTheme } from '../ui/theme';
-import { chunkAtTime, timelineDuration } from './playerMath';
+import { chunkAtTime, chunkByIndex, chunkDuration, sourceIsReady, timelineDuration } from './playerMath';
 import { Timeline } from './Timeline';
+import { resolveLocalPath } from '../recorder/paths';
 export interface ChunkPlayerHandle { seek(ms: number, play?: boolean): void; pause(): void }
 interface Props { chunks: AudioChunk[]; memos: Memo[]; onPosition: (ms: number) => void }
+type Target = NonNullable<ReturnType<typeof chunkAtTime>>;
 export const ChunkPlayer = forwardRef<ChunkPlayerHandle, Props>(function ChunkPlayer({ chunks, memos, onPosition }, ref) {
-  const c = useTheme(); const player = useAudioPlayer(null, { updateInterval: 200 });
+  const c = useTheme(); const player = useRef<AudioPlayer | null>(null);
   const [position, setPosition] = useState(0); const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [rate, setRate] = useState(1);
-  const current = useRef<AudioChunk | null>(null); const objectUrl = useRef<string | null>(null);
-  const generation = useRef(0); const transitioning = useRef(false); const desiredPlaying = useRef(false); const speed = useRef(1);
-  const mounted = useRef(true); const cancelWait = useRef<(() => void) | null>(null);
+  const [reported, setReported] = useState<Record<number, number>>({}); const durations = useRef<Record<number, number>>({});
+  const current = useRef<Target | null>(null); const objectUrl = useRef<string | null>(null);
+  const generation = useRef(0); const sourceGeneration = useRef(0); const transitioning = useRef(false);
+  const desiredPlaying = useRef(false); const speed = useRef(1); const mounted = useRef(true);
+  const cancelWait = useRef<(() => void) | null>(null); const removeStatus = useRef<(() => void) | null>(null);
   const latest = useRef({ chunks, onPosition }); latest.current = { chunks, onPosition };
-  const duration = timelineDuration(chunks);
-  const seekRef = useRef<(ms: number, play?: boolean) => void>(() => {});
-  const seek = useCallback((ms: number, play = desiredPlaying.current) => {
-    const target = chunkAtTime(latest.current.chunks, ms);
-    if (!target) return;
-    const version = ++generation.current;
-    cancelWait.current?.();
+  const duration = timelineDuration(chunks, reported);
+  const loadRef = useRef<(target: Target, play: boolean) => void>(() => {});
+  const publish = useCallback((ms: number) => { setPosition(ms); latest.current.onPosition(ms); }, []);
+  const rememberDuration = useCallback((chunk: AudioChunk, seconds: number) => {
+    if (!chunk.durationMs && Number.isFinite(seconds) && seconds > 0 && durations.current[chunk.seq] !== seconds * 1000) {
+      durations.current = { ...durations.current, [chunk.seq]: seconds * 1000 }; setReported(durations.current);
+    }
+  }, []);
+  const disposeSource = useCallback(() => {
+    sourceGeneration.current++;
+    removeStatus.current?.(); removeStatus.current = null;
+    player.current?.remove(); player.current = null; current.current = null;
+    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+    objectUrl.current = null;
+  }, []);
+  const load = useCallback((target: Target, play: boolean) => {
+    const version = ++generation.current; cancelWait.current?.();
     transitioning.current = true; desiredPlaying.current = play;
-    setLoading(true); setError(''); player.pause(); setPlaying(false);
-    const publish = (value: number) => { setPosition(value); latest.current.onPosition(value); };
+    setLoading(true); setError(''); player.current?.pause(); setPlaying(false);
     publish(target.chunk.startMs + target.offsetMs);
     void (async () => {
-      if (current.current?.seq !== target.chunk.seq || current.current?.noteId !== target.chunk.noteId) {
+      if (current.current?.chunk.seq !== target.chunk.seq || current.current?.chunk.noteId !== target.chunk.noteId) {
+        disposeSource();
         let uri: string | null = null; let createdUrl: string | null = null;
         if (target.chunk.localPath) {
           if (Platform.OS === 'web') {
             const blob = await store.getAudioBlob?.(target.chunk.localPath).catch(() => null);
             if (blob) { createdUrl = URL.createObjectURL(blob); uri = createdUrl; }
-          } else uri = target.chunk.localPath;
+          } else uri = resolveLocalPath(target.chunk.localPath);
         }
         if (!uri && target.chunk.remotePath) uri = await sync.chunkUrl(target.chunk.remotePath);
         if (version !== generation.current || !mounted.current) { if (createdUrl) URL.revokeObjectURL(createdUrl); return; }
         if (!uri) throw new Error('missing audio');
-        const previousUrl = objectUrl.current;
-        current.current = null;
+        objectUrl.current = createdUrl;
+        // A distinct player per source gives native/web events an unambiguous source id.
+        const audio = createAudioPlayer(null, { updateInterval: 200 }); player.current = audio;
+        const sourceVersion = ++sourceGeneration.current;
         await new Promise<void>((resolve, reject) => {
           let finished = false;
           const finish = (failure?: Error) => {
@@ -49,58 +65,66 @@ export const ChunkPlayer = forwardRef<ChunkPlayerHandle, Props>(function ChunkPl
             clearTimeout(timeout); subscription.remove(); cancelWait.current = null;
             if (failure) reject(failure); else resolve();
           };
-          const subscription = player.addListener('playbackStatusUpdate', status => {
+          const check = (status: AudioStatus) => {
+            if (sourceVersion !== sourceGeneration.current || status.id !== audio.id || version !== generation.current) return;
             if (status.error) finish(new Error('playback load failed'));
-            else if (status.isLoaded) finish();
-          });
+            else if (sourceIsReady(status, audio.id, sourceVersion, sourceGeneration.current)) { rememberDuration(target.chunk, status.duration); finish(); }
+          };
+          const subscription = audio.addListener('playbackStatusUpdate', check);
           const timeout = setTimeout(() => finish(new Error('load timeout')), 20000);
           cancelWait.current = () => finish(new Error('superseded'));
-          try { player.replace({ uri }); objectUrl.current = createdUrl; if (previousUrl) URL.revokeObjectURL(previousUrl); }
-          catch { if (createdUrl) URL.revokeObjectURL(createdUrl); finish(new Error('replace failed')); }
+          try { audio.replace({ uri }); check(audio.currentStatus); }
+          catch { finish(new Error('replace failed')); }
         });
         if (version !== generation.current || !mounted.current) return;
-        current.current = target.chunk;
+        current.current = target;
+        const subscription = audio.addListener('playbackStatusUpdate', status => {
+          if (!mounted.current || transitioning.current || sourceVersion !== sourceGeneration.current || status.id !== audio.id) return;
+          if (status.error) { desiredPlaying.current = false; setPlaying(false); setError('오디오 재생이 중단됐어요. 다시 재생해 주세요.'); return; }
+          rememberDuration(target.chunk, status.duration);
+          const ms = target.chunk.startMs + Math.min(chunkDuration(target.chunk, durations.current), status.currentTime * 1000);
+          publish(ms); setPlaying(status.playing);
+          if (status.didJustFinish && desiredPlaying.current) {
+            const next = chunkByIndex(latest.current.chunks, target.index + 1);
+            if (next) loadRef.current(next, true);
+            else { desiredPlaying.current = false; setPlaying(false); publish(timelineDuration(latest.current.chunks, durations.current)); }
+          }
+        });
+        removeStatus.current = () => subscription.remove();
       }
-      await player.seekTo(target.offsetMs / 1000);
+      const audio = player.current;
+      if (!audio) return;
+      const offset = Math.min(target.offsetMs, chunkDuration(target.chunk, durations.current));
+      await audio.seekTo(offset / 1000);
       if (version !== generation.current || !mounted.current) return;
-      player.setPlaybackRate(speed.current);
+      publish(target.chunk.startMs + offset); audio.setPlaybackRate(speed.current);
       transitioning.current = false; setLoading(false);
-      if (desiredPlaying.current) { player.play(); setPlaying(true); }
+      if (desiredPlaying.current) { audio.play(); setPlaying(true); }
     })().catch(() => {
       if (version !== generation.current || !mounted.current) return;
-      transitioning.current = false; desiredPlaying.current = false; current.current = null;
+      transitioning.current = false; desiredPlaying.current = false; disposeSource();
       setLoading(false); setPlaying(false); setError('오디오를 재생하지 못했어요. 연결 상태를 확인하고 다시 재생해 주세요.');
     });
-  }, [player]);
-  seekRef.current = seek;
-  useImperativeHandle(ref, () => ({ seek, pause() { desiredPlaying.current = false; player.pause(); setPlaying(false); } }), [seek, player]);
+  }, [disposeSource, publish, rememberDuration]);
+  loadRef.current = load;
+  const seek = useCallback((ms: number, play = desiredPlaying.current) => {
+    const target = chunkAtTime(latest.current.chunks, ms, durations.current); if (target) load(target, play);
+  }, [load]);
+  useImperativeHandle(ref, () => ({ seek, pause() { desiredPlaying.current = false; player.current?.pause(); setPlaying(false); } }), [seek]);
   useEffect(() => {
     mounted.current = true;
-    const subscription = player.addListener('playbackStatusUpdate', status => {
-      if (transitioning.current || !current.current) return;
-      if (status.error) { desiredPlaying.current = false; setPlaying(false); setError('오디오 재생이 중단됐어요. 다시 재생해 주세요.'); return; }
-      const chunk = current.current;
-      const ms = chunk.startMs + Math.min(chunk.durationMs, status.currentTime * 1000);
-      setPosition(ms); latest.current.onPosition(ms); setPlaying(status.playing);
-      if (status.didJustFinish && desiredPlaying.current) {
-        const index = latest.current.chunks.findIndex(item => item.seq === chunk.seq);
-        const next = latest.current.chunks[index + 1];
-        if (next) seekRef.current(next.startMs, true);
-        else { desiredPlaying.current = false; setPlaying(false); const end = timelineDuration(latest.current.chunks); setPosition(end); latest.current.onPosition(end); }
-      }
-    });
-    return () => { mounted.current = false; generation.current++; cancelWait.current?.(); subscription.remove(); if (objectUrl.current) { URL.revokeObjectURL(objectUrl.current); objectUrl.current = null; } };
-  }, [player]);
+    return () => { mounted.current = false; generation.current++; cancelWait.current?.(); disposeSource(); };
+  }, [disposeSource]);
   return <View style={[styles.card, { backgroundColor: c.surface, borderColor: c.border }]}>
     <Timeline durationMs={duration} positionMs={position} memos={memos} onSeek={ms => seek(ms)} />
     <View style={styles.row}>
       <Button title={loading ? '불러오는 중…' : playing ? '일시정지' : '재생'} primary disabled={!chunks.length || loading} onPress={() => {
-        if (playing) { desiredPlaying.current = false; player.pause(); setPlaying(false); }
+        if (playing) { desiredPlaying.current = false; player.current?.pause(); setPlaying(false); }
         else seek(position >= duration ? 0 : position, true);
       }} />
       <Button title="−10초" disabled={!chunks.length} onPress={() => seek(Math.max(0, position - 10000))} />
       <Button title="+10초" disabled={!chunks.length} onPress={() => seek(Math.min(duration, position + 10000))} />
-      {[0.5, 1, 1.5, 2].map(value => <Button key={value} title={`${value}×${rate === value ? ' ✓' : ''}`} onPress={() => { speed.current = value; setRate(value); try { player.setPlaybackRate(value); } catch { setError('배속을 변경하지 못했어요.'); } }} />)}
+      {[0.5, 1, 1.5, 2].map(value => <Button key={value} title={`${value}×${rate === value ? ' ✓' : ''}`} onPress={() => { speed.current = value; setRate(value); try { player.current?.setPlaybackRate(value); } catch { setError('배속을 변경하지 못했어요.'); } }} />)}
     </View>
     {!chunks.length && <Text style={{ color: c.muted }}>저장된 오디오가 없어요.</Text>}
     {!!error && <Notice text={error} error />}

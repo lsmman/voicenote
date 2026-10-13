@@ -144,3 +144,40 @@ test('delete cascades all child records and audio, preserving other notes', asyn
   expect(await store.getSummary('ab')).toEqual(summary('ab'));
   expect(await (await store.getAudioBlob!('ab/0'))?.text()).toBe('ab');
 });
+
+test('search uses a segment cursor and returns each matching note once', async () => {
+  await store.createNote(note('cursor'));
+  await store.putSegments('cursor', [
+    segment('c1', 'cursor', 0, 'needle'),
+    segment('c2', 'cursor', 1, 'needle again'),
+    segment('c3', 'cursor', 2, 'unrelated'),
+  ]);
+  const original = IDBObjectStore.prototype.getAll;
+  const reads = jest.spyOn(IDBObjectStore.prototype, 'getAll').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === 'segments') throw new Error('Search must not load all segments');
+    return original.apply(this, args);
+  });
+  try {
+    expect((await store.listNotes('NEEDLE')).map(entry => entry.id)).toEqual(['cursor']);
+  } finally { reads.mockRestore(); }
+});
+
+test('audio deletion uses a bounded range and preserves adjacent prefixes', async () => {
+  await store.createNote(note('range'));
+  const removed = ['range/', 'range/0', 'range/￿'];
+  const preserved = ['range', 'range-other/0', 'range0/0'];
+  for (const key of [...removed, ...preserved]) await store.putAudioBlob!(key, new Blob([key]));
+  const original = IDBObjectStore.prototype.getAllKeys;
+  const reads = jest.spyOn(IDBObjectStore.prototype, 'getAllKeys').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === 'audio') throw new Error('Audio deletion must not scan keys');
+    return original.apply(this, args);
+  });
+  try {
+    await store.deleteNote('range');
+    for (const key of removed) expect(await store.getAudioBlob!(key)).toBeNull();
+    for (const key of preserved) expect(await (await store.getAudioBlob!(key))?.text()).toBe(key);
+  } finally {
+    reads.mockRestore();
+    for (const key of [...removed, ...preserved]) await store.deleteAudioBlob!(key);
+  }
+});

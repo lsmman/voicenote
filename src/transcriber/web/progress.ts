@@ -1,9 +1,9 @@
-import type { ProgressInfo } from '@huggingface/transformers';
 import type { ModelDownloadProgress } from '../types';
 
 export function createProgressReporter(modelId: string, report: (p: ModelDownloadProgress) => void) {
   const files = new Map<string, { loaded: number; total: number }>();
-  return (event: ProgressInfo) => {
+  return (event: { status: string; name?: string; file?: string; loaded?: number; total?: number; progress?: number; files?: unknown }) => {
+    if (typeof event.loaded !== 'number' || typeof event.total !== 'number') return;
     if (event.status === 'progress_total') {
       report({ modelId, receivedBytes: event.loaded, totalBytes: event.total });
     } else if (event.status === 'progress') {

@@ -1,21 +1,31 @@
 import type { AudioChunk, Segment } from '../core/types';
-export function timelineDuration(chunks: AudioChunk[]): number {
-  return chunks.reduce((end, c) => Math.max(end, c.startMs + Math.max(0, c.durationMs)), 0);
+export type ReportedDurations = Readonly<Record<number, number>>;
+export function chunkDuration(chunk: AudioChunk, reported: ReportedDurations = {}): number {
+  return Math.max(0, chunk.durationMs || reported[chunk.seq] || 0);
 }
-// Boundary positions belong to the following chunk; gaps snap forward.
-export function chunkAtTime(chunks: AudioChunk[], ms: number): { chunk: AudioChunk; index: number; offsetMs: number } | null {
+export function timelineDuration(chunks: AudioChunk[], reported: ReportedDurations = {}): number {
+  return chunks.reduce((end, c) => Math.max(end, c.startMs + chunkDuration(c, reported)), 0);
+}
+export function chunkByIndex(chunks: AudioChunk[], index: number) {
+  const chunk = chunks[index];
+  return chunk ? { chunk, index, offsetMs: 0 } : null;
+}
+// Latest start wins at boundaries and in overlaps. Gaps clamp to the previous end.
+export function chunkAtTime(chunks: AudioChunk[], ms: number, reported: ReportedDurations = {}): { chunk: AudioChunk; index: number; offsetMs: number } | null {
   if (!chunks.length) return null;
   const time = Math.max(0, Number.isFinite(ms) ? ms : 0);
-  let index = chunks.findIndex(c => time < c.startMs + c.durationMs);
-  if (index < 0) index = chunks.length - 1;
-  const chunk = chunks[index];
-  return { chunk, index, offsetMs: Math.max(0, Math.min(chunk.durationMs, time - chunk.startMs)) };
+  let lo = 0; let hi = chunks.length;
+  while (lo < hi) { const mid = (lo + hi) >>> 1; if (chunks[mid].startMs <= time) lo = mid + 1; else hi = mid; }
+  const index = Math.max(0, lo - 1); const chunk = chunks[index];
+  const duration = chunkDuration(chunk, reported);
+  return { chunk, index, offsetMs: Math.max(0, duration > 0 ? Math.min(duration, time - chunk.startMs) : time - chunk.startMs) };
+}
+export function sourceIsReady(status: { id: string; isLoaded: boolean; duration: number }, playerId: string, sourceGeneration: number, currentGeneration: number): boolean {
+  return sourceGeneration === currentGeneration && status.id === playerId && status.isLoaded && Number.isFinite(status.duration) && status.duration > 0;
 }
 export function segmentAtTime(segments: Segment[], ms: number): Segment | null {
-  // Choose the latest start in overlapping transcripts; end is exclusive.
-  let found: Segment | null = null;
-  for (const segment of segments) {
-    if (segment.startMs <= ms && ms < segment.endMs && (!found || segment.startMs >= found.startMs)) found = segment;
-  }
-  return found;
+  let lo = 0; let hi = segments.length;
+  while (lo < hi) { const mid = (lo + hi) >>> 1; if (segments[mid].startMs <= ms) lo = mid + 1; else hi = mid; }
+  const segment = segments[lo - 1];
+  return segment && ms < segment.endMs ? segment : null;
 }

@@ -1,9 +1,11 @@
 import * as FileSystem from 'expo-file-system/legacy';
 // 0.7.4 exports only subpaths (no "." entry); /index resolves its installed types.
 import { initWhisper, type WhisperContext } from 'whisper.rn/index';
-import { whisperTicksToMs } from './audio';
+import { decodeAudioData, getAudioDuration } from 'react-native-audio-api';
+import { overlapTail, pcmWindows, SAMPLE_RATE, WINDOW_MS, whisperTicksToMs } from './audio';
 import { getModel, listModels } from './models';
 import { createSerialQueue } from './serial';
+import { resolveLocalPath } from '../recorder/paths';
 import type { TranscriberEngine } from './types';
 
 let context: WhisperContext | undefined;
@@ -74,19 +76,61 @@ export const engine: TranscriberEngine = {
     context = await initWhisper({ filePath: modelPath(id) });
     loadedId = id;
   }),
-  transcribeChunk: (chunk, { prompt }) => serial(async () => {
+  transcribeChunk: (rawChunk, { prompt, prevChunk: rawPrev }) => serial(async () => {
+    const chunk = rawChunk.localPath ? { ...rawChunk, localPath: resolveLocalPath(rawChunk.localPath) } : rawChunk;
+    const prevChunk = rawPrev?.localPath ? { ...rawPrev, localPath: resolveLocalPath(rawPrev.localPath) } : rawPrev;
     if (!context) throw new Error('Load a transcription model first');
     if (!chunk.localPath) throw new Error('Audio chunk has no local path');
-    // transcribeData accepts float32 PCM, but installed APIs do not expose an
-    // offline m4a-to-PCM decoder. Use the previous text prompt, not audio overlap.
-    // Integration limitation: 0.7.4's readWaveAudio only reads 16-bit PCM WAV;
-    // the recorder's m4a needs a decoder or a recording-format change upstream.
-    const result = await context.transcribe(chunk.localPath, {
-      language: 'ko', prompt, maxLen: 0, tokenTimestamps: true,
-    }).promise;
-    if (result.isAborted) throw new Error('Transcription was aborted');
-    return result.segments.map(({ text, t0, t1 }) => ({
-      text, startMs: whisperTicksToMs(t0), endMs: whisperTicksToMs(t1),
-    }));
+    const options = { language: 'ko', prompt, maxLen: 0, tokenTimestamps: true };
+    const mapResult = (result: Awaited<ReturnType<WhisperContext['transcribeData']>['promise']>, startMs: number) => {
+      if (result.isAborted) throw new Error('Transcription was aborted');
+      return result.segments.map(({ text, t0, t1 }) => ({
+        text, startMs: whisperTicksToMs(t0) + startMs, endMs: whisperTicksToMs(t1) + startMs,
+      }));
+    };
+
+    // 0.13.6 exposes no seek/range decode (AudioDecoder.d.ts / IAudioDecoder).
+    // For long WAV imports without overlap, avoid the extra JS decoded copy.
+    // Whisper's file reader still allocates native audio and requires PCM16 WAV.
+    // Metadata probing avoids decoding just to discover that a WAV is long.
+    if (!prevChunk && /\.wav(?:[?#]|$)/i.test(chunk.localPath)) {
+      const duration = await getAudioDuration(chunk.localPath).catch(() => chunk.durationMs / 1000);
+      if (duration * 1000 > WINDOW_MS) {
+        return mapResult(await context.transcribe(chunk.localPath, options).promise, 0);
+      }
+    }
+
+    const decode = async (path: string) => {
+      const audio = await decodeAudioData(path, SAMPLE_RATE);
+      if (audio.sampleRate !== SAMPLE_RATE) throw new Error('Audio decoder did not resample to 16 kHz');
+      return audio;
+    };
+    // Decode the previous file first and retain only its mono tail, never both
+    // full decoded files. The helper scopes release native buffers before inference.
+    const previousTail = async () => {
+      if (!prevChunk) return undefined;
+      if (!prevChunk.localPath) throw new Error('Previous audio chunk has no local path');
+      return overlapTail(await decode(prevChunk.localPath));
+    };
+    const prepare = async () => {
+      const tail = await previousTail();
+      return pcmWindows(await decode(chunk.localPath!), tail);
+    };
+    // Compressed inputs must decode in full with this installed API. Immediately
+    // copy ranges into <=10-minute mono PCM16 windows, then drop the decoded
+    // buffer before inference. This halves retained sample storage vs Float32;
+    // it cannot eliminate the initial native decode peak (or guarantee no OOM).
+    // Each consumed window is removed, so no full Float32/PCM duplicate persists.
+    const windows = await prepare();
+    const segments: { text: string; startMs: number; endMs: number }[] = [];
+    while (windows.length) {
+      const window = windows.shift()!;
+      // index.d.ts incorrectly says float32: RNWhisperJSI.cpp's
+      // whisperTranscribeData -> requireAudioBufferArgument -> decodePcm16
+      // consumes raw PCM16, mono, 16 kHz (no WAV header or base64 needed).
+      const result = await context.transcribeData(window.data, options).promise;
+      segments.push(...mapResult(result, window.startMs));
+    }
+    return segments;
   }),
 };

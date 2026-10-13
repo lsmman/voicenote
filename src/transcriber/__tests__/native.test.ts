@@ -2,10 +2,22 @@ import type { AudioChunk } from '../../core/types';
 
 const mockFiles = new Map<string, number>();
 const mockRelease = jest.fn(async () => undefined);
-const mockTranscribe = jest.fn(() => ({ promise: Promise.resolve({
+const mockTranscribe = jest.fn((_data: string | ArrayBuffer, _options: unknown) => ({ promise: Promise.resolve({
   isAborted: false, segments: [{ text: '안녕하세요', t0: 12, t1: 123 }],
 }) }));
-const mockInit = jest.fn(async () => ({ release: mockRelease, transcribe: mockTranscribe }));
+const mockTranscribeData = jest.fn((_data: string | ArrayBuffer, _options: unknown) => ({
+  promise: Promise.resolve({ isAborted: false, segments: [{ text: '안녕하세요', t0: 12, t1: 123 }] }),
+}));
+const mockDuration = jest.fn(async () => 601);
+const mockDecode = jest.fn(async (_path: string, _rate: number) => ({
+  sampleRate: 16000, length: 2, numberOfChannels: 2,
+  copyFromChannel: (out: Float32Array, channel: number, _start = 0) => { out.set(channel ? [0, -1] : [1, 0]); },
+}));
+jest.mock('react-native-audio-api', () => ({
+  decodeAudioData: (...args: Parameters<typeof mockDecode>) => mockDecode(...args),
+  getAudioDuration: () => mockDuration(),
+}));
+const mockInit = jest.fn(async () => ({ release: mockRelease, transcribe: mockTranscribe, transcribeData: mockTranscribeData }));
 let mockDownloadSize = 60_000_000;
 let mockStatus = 200;
 const mockMove = jest.fn(async ({ from, to }: { from: string; to: string }) => {
@@ -88,7 +100,68 @@ test('requires local model/audio and maps 10ms ticks relative to the chunk', asy
   expect(await engine.transcribeChunk(chunk, { language: 'ko', prompt: '이전 문장' })).toEqual([
     { text: '안녕하세요', startMs: 120, endMs: 1230 },
   ]);
-  expect(mockTranscribe).toHaveBeenCalledWith(chunk.localPath, {
+  expect(mockDecode).toHaveBeenCalledWith(chunk.localPath, 16000);
+  expect(Array.from(new Int16Array(mockTranscribeData.mock.calls[0][0] as ArrayBuffer))).toEqual([16384, -16384]);
+  expect(mockTranscribe).not.toHaveBeenCalled();
+  expect(mockTranscribeData).toHaveBeenCalledWith(expect.any(ArrayBuffer), {
     language: 'ko', prompt: '이전 문장', maxLen: 0, tokenTimestamps: true,
   });
+});
+
+
+test('prepends actual previous audio and shifts times by the available tail', async () => {
+  mockFiles.set(path, 60_000_000);
+  await engine.load('base-q5_1');
+  const segments = await engine.transcribeChunk(chunk, {
+    language: 'ko', prevChunk: { ...chunk, localPath: 'file:///previous.m4a' },
+  });
+  expect(mockDecode.mock.calls.map(([file]) => file)).toEqual(['file:///previous.m4a', chunk.localPath]);
+  expect(Array.from(new Int16Array(mockTranscribeData.mock.calls[0][0] as ArrayBuffer)))
+    .toEqual([16384, -16384, 16384, -16384]);
+  expect(segments[0].startMs).toBe(119.875);
+});
+
+test('long WAV without overlap uses the original path; compressed files never do', async () => {
+  mockFiles.set(path, 60_000_000);
+  await engine.load('base-q5_1');
+  await engine.transcribeChunk({ ...chunk, localPath: 'file:///import.WAV' }, { language: 'ko' });
+  expect(mockTranscribe).toHaveBeenCalledWith('file:///import.WAV', expect.any(Object));
+  expect(mockDecode).not.toHaveBeenCalled();
+  expect(mockTranscribeData).not.toHaveBeenCalled();
+});
+
+test('long compressed input transcribes successive windows with chunk-relative times', async () => {
+  mockFiles.set(path, 60_000_000);
+  await engine.load('base-q5_1');
+  mockDecode.mockResolvedValueOnce({ sampleRate: 16000, length: 9_600_001, numberOfChannels: 1,
+    copyFromChannel: (out) => { out.fill(0.5); } });
+  const segments = await engine.transcribeChunk({ ...chunk, localPath: 'file:///import.mp3' }, { language: 'ko' });
+  expect(mockDecode).toHaveBeenCalledTimes(1);
+  expect(mockTranscribe).not.toHaveBeenCalled();
+  expect(mockTranscribeData.mock.calls.map(([data]) => (data as ArrayBuffer).byteLength)).toEqual([19_200_000, 2]);
+  expect(segments.map((segment) => segment.startMs)).toEqual([120, 600120]);
+});
+
+test('rejects decode errors, wrong sample rates and aborted inference', async () => {
+  mockFiles.set(path, 60_000_000);
+  await engine.load('base-q5_1');
+  mockDecode.mockRejectedValueOnce(new Error('bad audio'));
+  await expect(engine.transcribeChunk(chunk, { language: 'ko' })).rejects.toThrow('bad audio');
+  mockDecode.mockResolvedValueOnce({ sampleRate: 48000, length: 0, numberOfChannels: 1, copyFromChannel: () => {} });
+  await expect(engine.transcribeChunk(chunk, { language: 'ko' })).rejects.toThrow('16 kHz');
+  mockTranscribeData.mockReturnValueOnce({ promise: Promise.resolve({ isAborted: true, segments: [] }) });
+  await expect(engine.transcribeChunk(chunk, { language: 'ko' })).rejects.toThrow('aborted');
+});
+
+test('a full second of real overlap produces negative segment times', async () => {
+  mockFiles.set(path, 60_000_000);
+  await engine.load('base-q5_1');
+  mockDecode.mockResolvedValueOnce({ sampleRate: 16000, length: 32_000, numberOfChannels: 1,
+    copyFromChannel: (out, _channel, start) => {
+      expect(start).toBe(16_000);
+      out.fill(-0.5);
+    } });
+  const segments = await engine.transcribeChunk(chunk, { language: 'ko', prevChunk: chunk });
+  expect(segments[0]).toEqual({ text: '안녕하세요', startMs: -880, endMs: 230 });
+  expect(new DataView(mockTranscribeData.mock.calls[0][0] as ArrayBuffer).getInt16(0, true)).toBe(-16384);
 });

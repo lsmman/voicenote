@@ -14,15 +14,19 @@ interface Schema extends DBSchema {
 let database: Promise<IDBPDatabase<Schema>> | undefined;
 function db() {
   database ??= openDB<Schema>('voicenote', 1, {
-    upgrade(db) {
-      db.createObjectStore('notes', { keyPath: 'id' });
-      db.createObjectStore('chunks', { keyPath: ['noteId', 'seq'] }).createIndex('noteId', 'noteId');
-      db.createObjectStore('segments', { keyPath: 'id' }).createIndex('noteId', 'noteId');
-      db.createObjectStore('memos', { keyPath: 'id' }).createIndex('noteId', 'noteId');
-      db.createObjectStore('summaries', { keyPath: 'noteId' });
-      db.createObjectStore('audio');
+    upgrade(db, oldVersion) {
+      if (oldVersion < 1) {
+        db.createObjectStore('notes', { keyPath: 'id' });
+        db.createObjectStore('chunks', { keyPath: ['noteId', 'seq'] }).createIndex('noteId', 'noteId');
+        db.createObjectStore('segments', { keyPath: 'id' }).createIndex('noteId', 'noteId');
+        db.createObjectStore('memos', { keyPath: 'id' }).createIndex('noteId', 'noteId');
+        db.createObjectStore('summaries', { keyPath: 'noteId' });
+        db.createObjectStore('audio');
+      }
     },
-    blocking() { void database?.then(connection => connection.close()); database = undefined; },
+    blocked() { console.warn('Local store upgrade is blocked; close other tabs to continue.'); },
+    // Keep the shared connection usable until this tab closes, including in-flight operations.
+    blocking() { console.warn('Local store upgrade is waiting for this tab to close.'); },
     terminated() { database = undefined; },
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -65,8 +69,12 @@ export const store: LocalStore = {
     const needle = query?.toLowerCase();
     const matches = new Set<string>();
     if (needle) {
-      for (const segment of await tx.objectStore('segments').getAll()) {
-        if (segment.text.toLowerCase().includes(needle)) matches.add(segment.noteId);
+      for (const note of notes) if (note.title.toLowerCase().includes(needle)) matches.add(note.id);
+      let cursor = await tx.objectStore('segments').openCursor();
+      while (cursor) {
+        const segment = cursor.value;
+        if (!matches.has(segment.noteId) && segment.text.toLowerCase().includes(needle)) matches.add(segment.noteId);
+        cursor = await cursor.continue();
       }
     }
     await tx.done;
@@ -80,7 +88,7 @@ export const store: LocalStore = {
       if (chunk.localPath) await audio.delete(chunk.localPath);
     }
     // Also remove blobs written before their chunk metadata was persisted.
-    for (const key of await audio.getAllKeys()) if (key.startsWith(`${id}/`)) await audio.delete(key);
+    await audio.delete(IDBKeyRange.bound(`${id}/`, `${id}/￿`));
     for (const name of ['chunks', 'segments', 'memos'] as const) {
       const records = tx.objectStore(name);
       for (const key of await records.index('noteId').getAllKeys(id)) await records.delete(key);

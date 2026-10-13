@@ -67,9 +67,9 @@ describe('recorder lifecycle', () => {
     expect(f.chunks).toHaveLength(0);
     await jest.advanceTimersByTimeAsync(90_000); await f.recorder.resume();
     await jest.advanceTimersByTimeAsync(600); await f.recorder.pause();
-    expect(f.chunks[0]).toMatchObject({ seq: 0, startMs: 400, durationMs: 600 });
+    expect(f.chunks[0]).toMatchObject({ seq: 0, startMs: 0, durationMs: 600 });
     await f.recorder.resume(); await jest.advanceTimersByTimeAsync(500); await f.recorder.stop();
-    expect(f.chunks[1]).toMatchObject({ seq: 1, startMs: 1000, durationMs: 500 });
+    expect(f.chunks[1]).toMatchObject({ seq: 1, startMs: 600, durationMs: 500 });
   });
   it('serializes stop behind durable persistence and never emits early', async () => {
     const f = fixture(); await f.start();
@@ -109,19 +109,24 @@ describe('recorder lifecycle', () => {
     await f.recorder.stop();
     expect(f.chunks).toHaveLength(2);
   });
-  it('ends safely after a persistence error without claiming that chunk is durable', async () => {
+  it('continues recording after a persistence error and warns only after retries exhaust', async () => {
     const f = fixture(); await f.start();
     f.blockPersistence(Promise.resolve().then(() => { throw new Error('disk write failed'); }));
     // Attach a handler until the recorder consumes the rejected promise.
     await jest.advanceTimersByTimeAsync(30_000);
     expect(f.chunks).toHaveLength(0);
-    expect(f.recorder.getState()).toBe('idle');
-    expect(f.order).toContain('close');
+    expect(f.recorder.getState()).toBe('recording');
+    expect(f.warnings).not.toContainEqual({ kind: 'interrupted', reason: 'persist-failed' });
+    await jest.advanceTimersByTimeAsync(7000);
+    expect(f.warnings).toContainEqual({ kind: 'interrupted', reason: 'persist-failed' });
+    await f.recorder.stop();
   });
   it('tries pre-preparation before stopping the active recorder', async () => {
     const f = fixture(); f.driver.prepareAhead = f.driver.prepare;
     await f.start(); await jest.advanceTimersByTimeAsync(30_000);
     expect(f.order.indexOf('prepare-1')).toBeLessThan(f.order.indexOf('stop-0'));
+    expect(f.order.indexOf('start-1')).toBeLessThan(f.order.indexOf('stop-0'));
+    expect(f.chunks[0]).toMatchObject({ mayOverlap: true });
     await f.recorder.stop();
   });
 });

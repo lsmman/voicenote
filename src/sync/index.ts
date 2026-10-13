@@ -3,15 +3,44 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import { Platform } from 'react-native';
 import type { SyncService } from './types';
+import { resolveLocalPath } from '../recorder/paths';
 import { memoFromRow, memoToRow, noteFromRow, noteToRow, segmentFromRow, segmentToRow, summaryFromRow, summaryToRow } from './mapping';
 
-export const supabase = createClient(
-  process.env.EXPO_PUBLIC_SUPABASE_URL!,
-  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+export const isSyncConfigured: boolean = !!supabaseUrl && !!supabaseAnonKey;
+const syncUnavailable = () => new Error('동기화가 설정되지 않았습니다');
+
+function createLocalClient(): ReturnType<typeof createClient> {
+  // Preserve chained query APIs while rejecting only when their result is awaited.
+  const unavailable: unknown = new Proxy(() => unavailable, {
+    get(_target, key) {
+      if (key === 'then') {
+        return (resolve: (value: never) => unknown, reject: (reason: unknown) => unknown) =>
+          Promise.reject(syncUnavailable()).then(resolve, reject);
+      }
+      return unavailable;
+    },
+  });
+  const auth = new Proxy({
+    async getSession() { return { data: { session: null } }; },
+    onAuthStateChange() { return { data: { subscription: { unsubscribe() {} } } }; },
+  }, {
+    get(target, key) { return key in target ? Reflect.get(target, key) : unavailable; },
+  });
+  return new Proxy({ auth }, {
+    get(target, key) { return key === 'auth' ? target.auth : unavailable; },
+  }) as unknown as ReturnType<typeof createClient>;
+}
+
+export const supabase = isSyncConfigured ? createClient(
+  supabaseUrl!,
+  supabaseAnonKey!,
   { auth: { storage: AsyncStorage, autoRefreshToken: true, persistSession: true, detectSessionInUrl: Platform.OS === 'web' } },
-);
+) : createLocalClient();
 
 async function requireSession() {
+  if (!isSyncConfigured) throw syncUnavailable();
   const { data, error } = await supabase.auth.getSession();
   if (error) throw error;
   if (!data.session) throw new Error('로그인이 필요합니다.');
@@ -36,7 +65,7 @@ export const sync: SyncService = {
       body = blob;
     } else {
       // Supabase recommends ArrayBuffer rather than Blob/FormData on React Native.
-      const response = await fetch(chunk.localPath);
+      const response = await fetch(resolveLocalPath(chunk.localPath));
       if (!response.ok) throw new Error('오디오 파일을 읽지 못했습니다.');
       body = await response.arrayBuffer();
     }

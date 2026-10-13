@@ -1,0 +1,18 @@
+import React from 'react';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { Timeline } from '../../components/Timeline';
+let tree: ReactTestRenderer;
+afterEach(async () => { await act(async () => tree?.unmount()); });
+test('drag updates its displayed position, seeks once on release, and cancellation does not seek', async () => {
+  const seek = jest.fn();
+  await act(async () => { tree = create(<Timeline durationMs={10000} positionMs={0} memos={[]} onSeek={seek} />); });
+  const track = () => tree.root.findAll(node => typeof node.type === 'string' && node.props.accessibilityRole === 'adjustable')[0];
+  await act(async () => track().props.onLayout({ nativeEvent: { layout: { width: 100 } } }));
+  await act(async () => track().props.onResponderGrant({ nativeEvent: { locationX: 20 } }));
+  await act(async () => track().props.onResponderMove({ nativeEvent: { locationX: 75 } }));
+  expect(track().props.accessibilityValue.now).toBe(8); expect(seek).not.toHaveBeenCalled();
+  await act(async () => track().props.onResponderRelease({ nativeEvent: { locationX: 80 } }));
+  expect(seek).toHaveBeenCalledTimes(1); expect(seek).toHaveBeenCalledWith(8000);
+  await act(async () => track().props.onResponderGrant({ nativeEvent: { locationX: 10 } }));
+  await act(async () => track().props.onResponderTerminate()); expect(seek).toHaveBeenCalledTimes(1);
+});

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Pressable, Text, View } from 'react-native';
+import { FlatList, Platform, Pressable, Text, View } from 'react-native';
 import { Link, Stack, router, useFocusEffect } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import { pipeline, store } from '../services';
@@ -16,7 +16,11 @@ export default function NotesScreen() {
   const [notes, setNotes] = useState<Note[]>([]); const [query, setQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false); const [loaded, setLoaded] = useState(false);
   const [progress, setProgress] = useState<Record<string, { done: number; total: number }>>({});
-  const request = useRef(0);
+  const request = useRef(0); const openingRecord = useRef(false);
+  const [liveRecording, setLiveRecording] = useState(false);
+  useEffect(() => pipeline.subscribe(state => setLiveRecording(!!state)), []);
+  useFocusEffect(useCallback(() => { openingRecord.current = false; }, []));
+  const openRecord = () => { if (openingRecord.current) return; openingRecord.current = true; router.navigate('/record'); };
   const load = useCallback(async () => {
     const version = ++request.current;
     try { const result = await store.listNotes(query); if (version === request.current) { setNotes(result); setLoaded(true); } }
@@ -37,13 +41,16 @@ export default function NotesScreen() {
     const result = await DocumentPicker.getDocumentAsync({ type: 'audio/*', copyToCacheDirectory: true, multiple: false });
     if (result.canceled) return;
     const file = result.assets[0];
-    const id = await pipeline.importFile(file.uri, file.name, file.mimeType ?? 'audio/mpeg');
-    router.push({ pathname: '/note/[id]', params: { id } });
+    try {
+      const id = await pipeline.importFile(file.uri, file.name, file.mimeType ?? 'audio/mpeg');
+      router.push({ pathname: '/note/[id]', params: { id } });
+    } finally { if (Platform.OS === 'web' && file.uri.startsWith('blob:')) URL.revokeObjectURL(file.uri); }
   }, '파일을 가져오지 못했어요. 지원되는 오디오 파일인지 확인해 주세요.');
   return <Screen>
     <Stack.Screen options={{ headerRight: () => <Link href="/settings" accessibilityLabel="설정" style={{ padding: 14, color: c.accent, fontSize: 16 }}>설정</Link> }} />
     <View style={styles.content}>
       <Text style={[styles.title, { color: c.text }]}>말을 담고, 생각을 남겨요</Text>
+      {liveRecording && <View style={styles.card}><Notice text="진행 중인 녹음이 있어요." /><Link href="/record" onPress={event => { event.preventDefault(); openRecord(); }} style={{ color: c.accent, padding: 12 }}>돌아가기</Link></View>}
       <Input accessibilityLabel="노트 검색" placeholder="제목이나 전사문 검색" value={query} onChangeText={setQuery} returnKeyType="search" />
       <View style={styles.row}><Button title={task.busy ? '가져오는 중…' : '파일 가져오기'} onPress={() => { void importFile(); }} disabled={task.busy} /><Button title="새로고침" onPress={() => { void refresh(); }} disabled={refreshing} /></View>
       {!!task.error && <Notice text={task.error} error />}
@@ -55,6 +62,6 @@ export default function NotesScreen() {
         <Text style={[styles.small, { color: c.muted }]}>{formatDate(item.createdAt)} · {formatTime(item.durationMs)}</Text>
         <Text style={{ color: item.status === 'error' ? c.danger : c.accent, alignSelf: 'flex-start', backgroundColor: c.soft, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 }}>{statusLabel(item.status, progress[item.id])}</Text>
       </Pressable>} />
-    <View style={{ position: 'absolute', bottom: 28, right: 24 }}><Button title="●  녹음" primary onPress={() => router.push('/record')} /></View>
+    <View style={{ position: 'absolute', bottom: 28, right: 24 }}><Button title="●  녹음" primary onPress={openRecord} /></View>
   </Screen>;
 }

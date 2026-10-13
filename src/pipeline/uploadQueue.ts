@@ -1,5 +1,15 @@
 import type { LocalStore } from '../store/types';
 import type { SyncService } from '../sync/types';
+import { withTimeout } from './timeout';
+import { resolveLocalPath } from '../recorder/paths';
+
+function permanent(error: unknown): boolean {
+  const value = error as { status?: unknown; statusCode?: unknown; response?: { status?: unknown }; message?: unknown; code?: unknown } | null;
+  const status = Number(value?.status ?? value?.statusCode ?? value?.response?.status);
+  const message = String(value?.message ?? error);
+  return (status >= 400 && status < 500) ||
+    /\b4\d\d\b|ENOENT|no such file|file.*(missing|not found|does not exist)|missing.*file|동기화가 설정되지 않았습니다|오디오 파일이 없습니다|저장된 오디오가 없습니다/i.test(message) || value?.code === 'ENOENT';
+}
 
 export function createUploadQueue(deps: {
   store: LocalStore; sync: SyncService; isOnline(): Promise<boolean>;
@@ -8,45 +18,49 @@ export function createUploadQueue(deps: {
   let active: Promise<void> | undefined;
   let requested = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let retryAt = 0;
-  let delay = 2_000;
+  const skipped = new Set<string>();
+  const retries = new Map<string, { at: number; delay: number }>();
 
-  function retry() {
-    retryAt = deps.now() + delay;
-    timer = setTimeout(() => {
-      timer = undefined;
-      retryAt = 0;
-      void resume().catch(() => { /* Next foreground resume can retry store failures. */ });
-    }, delay);
-    delay = Math.min(delay * 2, 300_000);
+  function schedule() {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    if (!retries.size) return;
+    const at = Math.min(...[...retries.values()].map(retry => retry.at));
+    timer = setTimeout(() => { timer = undefined; void resume().catch(() => undefined); }, Math.max(0, at - deps.now()));
   }
-
+  function retry(key: string) {
+    const delay = retries.get(key)?.delay ?? 2_000;
+    retries.set(key, { at: deps.now() + delay, delay: Math.min(delay * 2, 300_000) });
+  }
   async function drain() {
     do {
       requested = false;
-      if (retryAt > deps.now()) return;
-      if (timer) { clearTimeout(timer); timer = undefined; }
       const notes = (await deps.store.listNotes()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       for (const note of notes) {
-        const chunks = (await deps.store.listChunks(note.id)).sort((a, b) => a.seq - b.seq);
-        for (const chunk of chunks) {
-          if (chunk.remotePath !== null) continue;
+        for (const chunk of (await deps.store.listChunks(note.id)).sort((a, b) => a.seq - b.seq)) {
+          const key = `${chunk.noteId}:${chunk.seq}`;
+          if (chunk.remotePath !== null || skipped.has(key)) { retries.delete(key); continue; }
+          if (!chunk.localPath) { skipped.add(key); retries.delete(key); continue; }
+          if ((retries.get(key)?.at ?? 0) > deps.now()) continue;
           try {
-            if (!await deps.isOnline() || !await deps.isSignedIn()) { retry(); return; }
-            const remotePath = await deps.sync.uploadChunk(chunk);
+            if (!await deps.isOnline() || !await deps.isSignedIn()) { retry(key); continue; }
+            const remotePath = await withTimeout(deps.sync.uploadChunk(chunk), 120_000);
             await deps.store.updateChunk(chunk.noteId, chunk.seq, {
               remotePath, uploadedAt: new Date(deps.now()).toISOString(),
             });
-            delay = 2_000;
-          } catch { retry(); return; }
+            retries.delete(key);
+          } catch (error) {
+            if (permanent(error)) { skipped.add(key); retries.delete(key); }
+            else retry(key);
+          }
         }
       }
     } while (requested);
   }
-
-  function resume(): Promise<void> {
+  function resume(force: boolean | { force?: boolean } = false): Promise<void> {
+    if (typeof force === 'boolean' ? force : force.force) retries.clear();
     requested = true;
-    if (!active) active = drain().finally(() => { active = undefined; });
+    if (!active) active = drain().finally(() => { active = undefined; schedule(); });
     return active;
   }
   return { resume };
@@ -61,7 +75,7 @@ export function createCleanupLocal(store: LocalStore, deleteFile: (uri: string) 
     for (const chunk of chunks) {
       if (!chunk.localPath) continue;
       if (store.deleteAudioBlob) await store.deleteAudioBlob(chunk.localPath);
-      else await deleteFile(chunk.localPath);
+      else await deleteFile(resolveLocalPath(chunk.localPath));
       await store.updateChunk(noteId, chunk.seq, { localPath: null });
     }
   };

@@ -75,8 +75,11 @@ begin
 end $$;
 grant select, insert, update, delete on public.notes, public.audio_chunks, public.segments, public.memos, public.summaries to authenticated;
 
-insert into storage.buckets (id, name, public) values ('audio', 'audio', false)
-on conflict (id) do update set public = false;
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('audio', 'audio', false, 104857600,
+  array['audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/webm', 'audio/ogg'])
+on conflict (id) do update set public = false,
+  file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
 create policy audio_owner on storage.objects for all to authenticated
   using (bucket_id = 'audio' and (storage.foldername(name))[1] = (select auth.uid())::text)
   with check (bucket_id = 'audio' and (storage.foldername(name))[1] = (select auth.uid())::text);

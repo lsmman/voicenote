@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { BackHandler, KeyboardAvoidingView, Linking, Platform, ScrollView, Text, View } from 'react-native';
-import { router } from 'expo-router';
+import { router, useNavigation } from 'expo-router';
+import { usePreventRemove } from 'expo-router/react-navigation';
+import { startOrAttachRecording, webLocks } from '../ui/recordingSession';
 import { pipeline } from '../services';
 import type { LiveSessionState } from '../pipeline/types';
 import type { RecorderWarning } from '../recorder/types';
@@ -11,28 +13,33 @@ import { styles, useTheme } from '../ui/theme';
 import { useTask } from '../ui/useTask';
 const warningText = (warning: RecorderWarning) => ({ 'mic-ended': '마이크가 끊겼어요', silence: '10초 이상 소리가 없어요', 'low-storage': '저장공간이 부족해요. 공간을 확보해 주세요.', interrupted: '녹음이 잠시 중단됐어요. 마이크 상태를 확인해 주세요.' })[warning.kind];
 export default function RecordScreen() {
-  const c = useTheme(); const task = useTask();
+  const c = useTheme(); const task = useTask(); const navigation = useNavigation();
   const [live, setLive] = useState<LiveSessionState | null>(null);
   const [noteId, setNoteId] = useState(''); const [starting, setStarting] = useState(true);
   const [startError, setStartError] = useState(false); const [memo, setMemo] = useState(''); const [attached, setAttached] = useState('');
+  const finished = useRef(false);
   const startPromise = useRef<Promise<string> | null>(null); const transcript = useRef<ScrollView>(null);
   useEffect(() => {
     let alive = true;
-    let existingId: string | null = null;
     const unsubscribe = pipeline.subscribe((state: LiveSessionState | null) => {
-      if (alive) { setLive(state); if (state) { existingId = state.noteId; setNoteId(state.noteId); } }
+      if (alive) { setLive(state); if (state) { setNoteId(state.noteId); } }
     });
     // Returning through browser history must reattach to the live recording.
-    if (!startPromise.current) startPromise.current = existingId ? Promise.resolve(existingId) : pipeline.startRecording();
-    startPromise.current.then(id => { if (alive) setNoteId(id); }).catch(() => { if (alive) setStartError(true); }).finally(() => { if (alive) setStarting(false); });
+    if (!startPromise.current) startPromise.current = startOrAttachRecording(pipeline, webLocks(Platform.OS === 'web'));
+    startPromise.current.then(id => { if (alive) setNoteId(id); }).catch(error => { if (alive) { setStartError(true); if (error instanceof Error && error.message.includes('다른 탭')) task.setError(error.message); } }).finally(() => { if (alive) setStarting(false); });
     return () => { alive = false; unsubscribe(); };
   }, []);
+  const blocking = starting || !!live;
+  usePreventRemove(Platform.OS === 'web' && blocking, ({ data }) => {
+    if (finished.current) { navigation.dispatch(data.action); return; }
+    void confirmAction('녹음이 진행 중이에요. 화면을 떠나도 녹음은 계속돼요. 나갈까요?', '나가기').then(leave => { if (leave) navigation.dispatch(data.action); });
+  });
   useEffect(() => {
-    const back = BackHandler.addEventListener('hardwareBackPress', () => !!noteId);
-    const unload = (event: BeforeUnloadEvent) => { if (noteId && live?.state !== 'idle') { event.preventDefault(); event.returnValue = ''; } };
+    const back = BackHandler.addEventListener('hardwareBackPress', () => blocking);
+    const unload = (event: BeforeUnloadEvent) => { if (blocking) { event.preventDefault(); event.returnValue = ''; } };
     if (Platform.OS === 'web') window.addEventListener('beforeunload', unload);
     return () => { back.remove(); if (Platform.OS === 'web') window.removeEventListener('beforeunload', unload); };
-  }, [noteId, live?.state]);
+  }, [blocking]);
   const addMemo = (kind: 'memo' | 'bookmark') => task.run(async () => {
     if (kind === 'memo' && !memo.trim()) return;
     const result = await pipeline.addMemo(kind === 'memo' ? memo.trim() : '', kind);
@@ -42,6 +49,7 @@ export default function RecordScreen() {
   const stop = () => task.run(async () => {
     if (!await confirmAction('녹음을 마치고 노트를 저장할까요?', '녹음 종료')) return;
     await pipeline.stopRecording();
+    finished.current = true;
     router.replace({ pathname: '/note/[id]', params: { id: noteId } });
   }, '녹음을 종료하지 못했어요. 저장된 부분은 유지돼요. 다시 시도해 주세요.');
   const active = !!noteId && !!live && (live.state === 'recording' || live.state === 'paused');

@@ -24,3 +24,12 @@ test('does not mutate existing input or retain invalid intervals', () => {
 test('an intentional repeated segment extending beyond overlap is preserved', () => {
   expect(mergeSegments(existing, [{ startMs: 0, endMs: 4000, text: '마지막 문장입니다.' }], 30_000, 'n', id)).toHaveLength(2);
 });
+
+test('covered midpoint drops changed text and preserves an uncovered continuation', () => {
+  const merged = mergeSegments(existing, [
+    { startMs: -900, endMs: 100, text: '다르게 인식된 중복' },
+    { startMs: -100, endMs: 2000, text: '다음 내용' },
+  ], 30_000, 'n', id, 1);
+  expect(merged.map(s => s.text)).toEqual(['마지막 문장입니다.', '다음 내용']);
+  expect(merged[1].id).toBe('n:1:1');
+});

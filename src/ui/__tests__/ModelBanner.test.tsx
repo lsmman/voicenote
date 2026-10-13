@@ -24,7 +24,7 @@ test('shared model subscription renders progress, wifi consent, error retry, and
   await act(async () => tree.root.findByType(Button).props.onPress());
   expect(mockDownload).toHaveBeenCalledTimes(1);
   await act(async () => mockListener({ kind: 'error', modelId: 'test', message: 'Download failed' }));
-  expect(JSON.stringify(tree.toJSON())).toContain('Download failed');
+  expect(JSON.stringify(tree.toJSON())).toContain('전사 모델을 받지 못했어요');
   expect(tree.root.findByType(Button).props.title).toBe('다시 시도');
   await act(async () => tree.root.findByType(Button).props.onPress());
   expect(mockDownload).toHaveBeenCalledTimes(2);

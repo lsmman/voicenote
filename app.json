@@ -1,0 +1,57 @@
+{
+  "expo": {
+    "name": "voicenote",
+    "slug": "voicenote",
+    "scheme": "voicenote",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.lsmman.voicenote",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio"
+        ],
+        "NSMicrophoneUsageDescription": "회의와 강의를 녹음하기 위해 마이크를 사용합니다."
+      }
+    },
+    "android": {
+      "package": "com.lsmman.voicenote",
+      "permissions": [
+        "RECORD_AUDIO",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MICROPHONE",
+        "POST_NOTIFICATIONS",
+        "WAKE_LOCK"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-sqlite",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "회의와 강의를 녹음하기 위해 마이크를 사용합니다.",
+          "enableBackgroundRecording": true
+        }
+      ],
+      "react-native-audio-api"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}

@@ -1,0 +1,94 @@
+import 'react-native-url-polyfill/auto';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { createClient } from '@supabase/supabase-js';
+import { Platform } from 'react-native';
+import type { SyncService } from './types';
+import { memoFromRow, memoToRow, noteFromRow, noteToRow, segmentFromRow, segmentToRow, summaryFromRow, summaryToRow } from './mapping';
+
+export const supabase = createClient(
+  process.env.EXPO_PUBLIC_SUPABASE_URL!,
+  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
+  { auth: { storage: AsyncStorage, autoRefreshToken: true, persistSession: true, detectSessionInUrl: Platform.OS === 'web' } },
+);
+
+async function requireSession() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  if (!data.session) throw new Error('로그인이 필요합니다.');
+  return data.session;
+}
+
+export const sync: SyncService = {
+  async uploadChunk(chunk) {
+    const { user } = await requireSession();
+    if (!chunk.localPath) throw new Error('오디오 파일이 없습니다.');
+    if (!/^[\w-]+$/.test(chunk.noteId) || !Number.isSafeInteger(chunk.seq) || chunk.seq < 0) {
+      throw new Error('잘못된 청크 경로입니다.');
+    }
+    const mime = chunk.mimeType.split(';')[0].trim().toLowerCase();
+    const ext = ({ 'audio/mp4': 'm4a', 'audio/m4a': 'm4a', 'audio/x-m4a': 'm4a', 'audio/aac': 'aac', 'audio/webm': 'webm', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg' } as Record<string, string>)[mime];
+    if (!ext) throw new Error(`지원하지 않는 오디오 형식: ${mime}`);
+    let body: Blob | ArrayBuffer;
+    if (Platform.OS === 'web') {
+      const { store } = await import('../store');
+      const blob = await store.getAudioBlob?.(chunk.localPath);
+      if (!blob) throw new Error('저장된 오디오가 없습니다.');
+      body = blob;
+    } else {
+      // Supabase recommends ArrayBuffer rather than Blob/FormData on React Native.
+      const response = await fetch(chunk.localPath);
+      if (!response.ok) throw new Error('오디오 파일을 읽지 못했습니다.');
+      body = await response.arrayBuffer();
+    }
+    const path = `${user.id}/${chunk.noteId}/${chunk.seq}.${ext}`;
+    const { error } = await supabase.storage.from('audio').upload(path, body, { contentType: mime, upsert: true });
+    if (error) throw error;
+    return path;
+  },
+  async pushNote(note, segments, memos, summary) {
+    const { user } = await requireSession();
+    if ((note.userId && note.userId !== user.id) || segments.some(s => s.noteId !== note.id)
+      || memos.some(m => m.noteId !== note.id) || (summary && summary.noteId !== note.id)) {
+      throw new Error('노트 소유자 또는 연결된 데이터가 일치하지 않습니다.');
+    }
+    const { error } = await supabase.rpc('sync_push_note', {
+      p_note: noteToRow(note, user.id), p_segments: segments.map(segmentToRow),
+      p_memos: memos.map(memoToRow), p_summary: summary ? summaryToRow(summary) : null,
+    });
+    if (error) throw error;
+  },
+  async pullNotes() {
+    await requireSession();
+    // Page beyond PostgREST's default 1,000-row limit.
+    const notes = [];
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false }).order('id').range(offset, offset + 499);
+      if (error) throw error;
+      notes.push(...data.map(noteFromRow));
+      if (data.length < 500) return notes;
+    }
+  },
+  async pullNoteDetail(noteId) {
+    await requireSession();
+    // One SQL snapshot; JSON aggregation also avoids truncating long transcripts.
+    const { data, error } = await supabase.rpc('sync_pull_note_detail', { p_note_id: noteId });
+    if (error) throw error;
+    if (!data) throw new Error('노트를 찾을 수 없습니다.');
+    return { segments: data.segments.map(segmentFromRow), memos: data.memos.map(memoFromRow), summary: data.summary ? summaryFromRow(data.summary) : null };
+  },
+  async chunkUrl(remotePath) {
+    await requireSession();
+    const { data, error } = await supabase.storage.from('audio').createSignedUrl(remotePath, 3600);
+    if (error) throw error;
+    return data.signedUrl;
+  },
+  async summarize(req) {
+    const session = await requireSession();
+    const base = (process.env.EXPO_PUBLIC_API_BASE ?? '').replace(/\/$/, '');
+    const response = await fetch(`${base}/api/summarize`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify(req),
+    });
+    if (!response.ok) throw new Error(`요약 요청 실패 (${response.status})`);
+    return response.json();
+  },
+};

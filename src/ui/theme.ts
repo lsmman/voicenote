@@ -1,6 +1,7 @@
 import { Platform, useColorScheme, StyleSheet, type TextStyle } from 'react-native';
 
 const light = {
+  chartPrimary: '#3E63DD', chartSecondary: '#C27C00',
   bg: '#F9F9F8', surface: '#FFFFFF', surfaceRaised: '#FFFFFF', subtle: '#F1F0EF', subtleHover: '#E9E8E6',
   border: '#E2E1DE', borderStrong: '#D3D1CC',
   text: '#21201C', textSecondary: '#63635E', textMuted: '#706F6A',
@@ -13,6 +14,7 @@ const light = {
   overlay: 'rgba(17,17,16,0.40)', focusRing: 'rgba(62,99,221,0.35)',
 };
 const dark: typeof light = {
+  chartPrimary: '#5472E4', chartSecondary: '#BB7D00',
   bg: '#111110', surface: '#191918', surfaceRaised: '#222221', subtle: '#2A2A28', subtleHover: '#31312E',
   border: '#2A2A28', borderStrong: '#3B3A37',
   text: '#EEEEEC', textSecondary: '#B5B3AD', textMuted: '#8F8D86',

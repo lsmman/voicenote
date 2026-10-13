@@ -73,3 +73,12 @@ test('strips markdown links and images in every returned text field, preserving 
     keywords: ['**참고** 자료 그림'], todos: [{ text: '**참고** 자료 그림', atMs: null }],
   });
 });
+
+test('fractional millisecond times from windowed transcription are accepted and rounded', () => {
+  const parsed = requestSchema.safeParse({
+    noteId: 'n', title: 't', memos: [],
+    segments: [{ id: 'x', noteId: 'n', edited: false, startMs: 24333.375, endMs: 25500.5, text: '문장', speakerLabel: null }],
+  });
+  expect(parsed.success).toBe(true);
+  if (parsed.success) expect(parsed.data.segments[0]).toEqual({ startMs: 24333, endMs: 25501, text: '문장', speakerLabel: null });
+});

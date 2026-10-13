@@ -44,6 +44,7 @@ export function fakes() {
   let events: Partial<RecorderEvents> = {};
   let state: RecorderState = 'idle';
   const deps: PipelineDeps = {
+    platform: 'native', getNetworkType: jest.fn(async () => 'wifi'),
     store, now: Date.now, getModelId: async () => 'test-model',
     isOnline: jest.fn(async () => true), isSignedIn: jest.fn(async () => true),
     recorder: {

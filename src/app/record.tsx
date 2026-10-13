@@ -1,3 +1,5 @@
+import { LevelMeter, RecordingStatus } from '../ui/RecordingVisuals';
+import { ModelBanner } from '../ui/ModelBanner';
 import { useEffect, useRef, useState } from 'react';
 import { BackHandler, KeyboardAvoidingView, Linking, Platform, ScrollView, Text, View } from 'react-native';
 import { router, useNavigation } from 'expo-router';
@@ -9,11 +11,11 @@ import type { RecorderWarning } from '../recorder/types';
 import { confirmAction } from '../ui/actions';
 import { formatTime, formatTimestamp } from '../ui/format';
 import { Button, Input, Notice, Screen } from '../ui/primitives';
-import { styles, useTheme } from '../ui/theme';
+import { shadow, styles, type, useIsDark, useTheme } from '../ui/theme';
 import { useTask } from '../ui/useTask';
 const warningText = (warning: RecorderWarning) => ({ 'mic-ended': '마이크가 끊겼어요', silence: '10초 이상 소리가 없어요', 'low-storage': '저장공간이 부족해요. 공간을 확보해 주세요.', interrupted: '녹음이 잠시 중단됐어요. 마이크 상태를 확인해 주세요.' })[warning.kind];
 export default function RecordScreen() {
-  const c = useTheme(); const task = useTask(); const navigation = useNavigation();
+  const c = useTheme(); const dark = useIsDark(); const task = useTask(); const navigation = useNavigation();
   const [live, setLive] = useState<LiveSessionState | null>(null);
   const [noteId, setNoteId] = useState(''); const [starting, setStarting] = useState(true);
   const [startError, setStartError] = useState(false); const [memo, setMemo] = useState(''); const [attached, setAttached] = useState('');
@@ -55,28 +57,29 @@ export default function RecordScreen() {
   const active = !!noteId && !!live && (live.state === 'recording' || live.state === 'paused');
   return <Screen><KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={96}>
     <View style={[styles.content, { paddingBottom: 8 }]}>
-      {Platform.OS === 'web' && <Notice text="모바일 브라우저에서는 화면을 끄면 녹음이 멈출 수 있어요. 화면과 이 탭을 켜 두세요." />}
+      {Platform.OS === 'web' && <Notice tone="info" text="모바일 브라우저에서는 화면을 끄면 녹음이 멈출 수 있어요. 화면과 이 탭을 켜 두세요." />}
       {startError && <><Notice error text="녹음을 시작하지 못했어요. 마이크 권한과 저장공간을 확인해 주세요." />{Platform.OS !== 'web' && <Button title="기기 설정 열기" onPress={() => { void task.run(() => Linking.openSettings()); }} />}<Button title="목록으로" onPress={() => router.replace('/')} /></>}
-      <Text accessibilityLabel="녹음 시간" style={{ color: c.text, fontSize: 46, textAlign: 'center', fontVariant: ['tabular-nums'], fontWeight: '600' }}>{formatTime(live?.elapsedMs ?? 0)}</Text>
-      <Text style={{ color: c.muted, textAlign: 'center' }}>{starting ? '마이크 준비 중…' : live?.state === 'paused' ? '일시정지' : active ? '녹음 중' : '녹음이 종료됐어요'}</Text>
-      <View accessibilityLabel="마이크 음량" accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: Math.round((live?.level ?? 0) * 100) }} style={{ height: 10, borderRadius: 5, backgroundColor: c.border, overflow: 'hidden' }}><View style={{ width: `${Math.min(100, Math.max(0, (live?.level ?? 0) * 100))}%`, height: 10, backgroundColor: c.accent }} /></View>
-      <Text style={[styles.small, { color: c.muted }]}>전사 대기 {live?.pendingChunks ?? 0}</Text>
-      {Array.from(new Map((live?.warnings ?? []).map(w => [w.kind, w])).values()).map(w => <Notice key={w.kind} error text={warningText(w)} />)}
+      <Text accessibilityLabel="녹음 시간" style={[type.display, { color: live?.state === 'paused' ? c.textMuted : c.text, textAlign: 'center', marginTop: 24 }]}>{formatTime(live?.elapsedMs ?? 0)}</Text>
+      <RecordingStatus recording={!starting && active && live?.state !== 'paused'} paused={live?.state === 'paused'} text={starting ? '마이크 준비 중…' : live?.state === 'paused' ? '일시정지' : active ? '녹음 중' : '녹음이 종료됐어요'} />
+      <LevelMeter level={live?.level ?? 0} paused={live?.state === 'paused'} />
+      <Text style={[type.caption, { color: c.muted, textAlign: 'center', fontVariant: ['tabular-nums'] }]}>전사 대기 {live?.pendingChunks ?? 0}</Text>
+      {Array.from(new Map((live?.warnings ?? []).map(w => [w.kind, w])).values()).map(w => <Notice key={w.kind} tone={w.kind === 'mic-ended' ? 'danger' : 'warning'} text={warningText(w)} />)}
     </View>
     <ScrollView ref={transcript} style={{ flex: 1 }} contentContainerStyle={styles.content} onContentSizeChange={() => transcript.current?.scrollToEnd({ animated: true })}>
-      {live?.liveSegments.slice(-20).map(segment => <Text key={segment.id} style={[styles.body, { color: c.text }]}>{segment.text}</Text>)}
-      {!live?.liveSegments.length && <Text style={[styles.body, { color: c.muted }]}>녹음한 말이 여기에 차곡차곡 나타나요.</Text>}
+      {live?.liveSegments.slice(-20).map(segment => <Text key={segment.id} style={[type.reading, { color: segment === live?.liveSegments.at(-1) ? c.text : c.textSecondary, marginBottom: 12 }]}>{segment.text}</Text>)}
+      {!live?.liveSegments.length && <Text style={[type.reading, { color: c.muted }]}>녹음한 말이 여기에 차곡차곡 나타나요.</Text>}
     </ScrollView>
-    <View style={[styles.content, { backgroundColor: c.surface }]}>
+    <ModelBanner dock />
+    <View style={[styles.content, { backgroundColor: c.surfaceRaised, borderTopWidth: 1, borderTopColor: c.border, paddingTop: 12, gap: 10, ...shadow(dark).md }]}>
       {!!task.error && <Notice error text={task.error} />}
-      {!!attached && <Text accessibilityLiveRegion="polite" style={{ color: c.accent }}>{attached}</Text>}
+      {!!attached && <Text accessibilityLiveRegion="polite" style={[type.small, { color: c.accentText, fontVariant: ['tabular-nums'] }]}>{attached}</Text>}
       <Input accessibilityLabel="녹음 중 메모" placeholder="지금 떠오른 생각을 메모하세요" value={memo} onChangeText={setMemo} editable={active && !task.busy} returnKeyType="send" onSubmitEditing={() => { void addMemo('memo'); }} />
       <View style={styles.row}>
         <Button title="메모 추가" disabled={!active || task.busy || !memo.trim()} onPress={() => { void addMemo('memo'); }} />
         <Button title="☆ 북마크" disabled={!active || task.busy} onPress={() => { void addMemo('bookmark'); }} />
         <Button title={live?.state === 'paused' ? '다시 녹음' : '일시정지'} disabled={!active || task.busy} onPress={() => { void task.run(() => live?.state === 'paused' ? pipeline.resumeRecording() : pipeline.pauseRecording()); }} />
-        <Button title={live?.state === 'idle' ? '저장하고 종료' : '녹음 종료'} primary disabled={!noteId || starting || !live || live.state === 'stopping' || task.busy} onPress={() => { void stop(); }} />
-        {!!noteId && !starting && !live && <Button title="저장된 노트 보기" onPress={() => router.replace({ pathname: '/note/[id]', params: { id: noteId } })} />}
+        <Button title={live?.state === 'idle' ? '저장하고 종료' : '녹음 종료'} stop style={{ minWidth: 120, marginLeft: 'auto' }} disabled={!noteId || starting || !live || live.state === 'stopping' || task.busy} onPress={() => { void stop(); }} />
+        {!!noteId && !starting && !live && <Button title="저장된 노트 보기" primary onPress={() => router.replace({ pathname: '/note/[id]', params: { id: noteId } })} />}
       </View>
     </View>
   </KeyboardAvoidingView></Screen>;

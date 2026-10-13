@@ -16,7 +16,7 @@ export const MODELS: readonly TranscriptionModel[] = [
   ['small-q5_1', 'Whisper Small', 190_000_000, 'small', 300_000_000],
   ['base-q5_1', 'Whisper Base', 59_700_000, 'base', 100_000_000],
 ].map(([id, label, sizeBytes, webName, webSizeBytes], index) => ({
-  id: String(id), label: String(label), sizeBytes: Number(Platform.OS === 'web' ? webSizeBytes : sizeBytes), recommended: index === 0,
+  id: String(id), label: String(label), sizeBytes: Number(Platform.OS === 'web' ? webSizeBytes : sizeBytes), recommended: Platform.OS === 'web' ? id === 'small-q5_1' : index === 0,
   native: {
     sizeBytes: Number(sizeBytes),
     file: `ggml-${id}.bin`,

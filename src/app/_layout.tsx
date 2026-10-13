@@ -7,12 +7,34 @@ import { handleAuthRedirect } from '../sync/auth';
 import { webLocks } from '../ui/recordingSession';
 import { recoverUnfinished, type RecoveryChoice } from '../ui/recovery';
 import { Button, Notice } from '../ui/primitives';
-import { styles, useTheme } from '../ui/theme';
+import { fontSans, styles, useTheme } from '../ui/theme';
+
+if (Platform.OS === 'web' && typeof document !== 'undefined' && !document.getElementById('font-pretendard')) {
+  const link = document.createElement('link');
+  link.id = 'font-pretendard'; link.rel = 'stylesheet';
+  link.href = 'https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css';
+  document.head.appendChild(link);
+  const style = document.createElement('style');
+  style.textContent = `
+    body, body * { font-family: ${fontSans} !important; }
+    body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
+    ::selection { background: rgba(62,99,221,0.22); }
+    [role="button"]:focus-visible, [role="tab"]:focus-visible, a:focus-visible { outline: 2px solid var(--vn-focus); outline-offset: 2px; }
+    @media (prefers-color-scheme: dark) { ::selection { background: rgba(110,139,255,0.35); } }
+  `;
+  document.head.appendChild(style);
+}
 
 const promptedNotes = new Set<string>();
 
 export default function RootLayout() {
   const c = useTheme();
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      document.body.style.backgroundColor = c.bg;
+      document.body.style.setProperty('--vn-focus', c.focusRing);
+    }
+  }, [c.bg, c.focusRing]);
   const [recovery, setRecovery] = useState<{ title: string; resolve: (choice: RecoveryChoice) => void } | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
@@ -51,7 +73,7 @@ export default function RootLayout() {
   return <View style={[styles.screen, { backgroundColor: c.background }]}>
     {recovery && <View style={styles.content}><Text style={[styles.heading, { color: c.text }]}>{recovery.title || '중단된 녹음'}</Text><Notice text="저장된 부분까지 복구할까요?" /><View style={styles.row}><Button title="복구" onPress={() => recovery.resolve('recover')} /><Button title="삭제" danger onPress={() => recovery.resolve('discard')} /><Button title="나중에" onPress={() => recovery.resolve('later')} /></View></View>}
     {!!error && <View style={{ padding: 16 }}><Notice text={error} error /><Button title={ready ? '닫기' : '다시 시도'} onPress={() => { setError(''); if (!ready) { startup.current = null; setRetry(n => n + 1); } }} /></View>}
-    {!ready ? <ActivityIndicator accessibilityLabel="노트 준비 중" style={{ margin: 40 }} color={c.accent} /> : <Stack screenOptions={{ headerStyle: { backgroundColor: c.surface }, headerTintColor: c.text, contentStyle: { backgroundColor: c.background }, headerShadowVisible: false }}>
+    {!ready ? <ActivityIndicator accessibilityLabel="노트 준비 중" style={{ margin: 40 }} color={c.textMuted} /> : <Stack screenOptions={{ headerStyle: { backgroundColor: c.bg }, headerTitleStyle: { fontSize: 17, fontWeight: '600' }, headerTintColor: c.text, contentStyle: { backgroundColor: c.background }, headerShadowVisible: false }}>
       <Stack.Screen name="index" options={{ title: '음성 노트' }} />
       <Stack.Screen name="record" options={{ title: '녹음', gestureEnabled: false, headerBackVisible: false }} />
       <Stack.Screen name="note/[id]" options={{ title: '노트' }} />

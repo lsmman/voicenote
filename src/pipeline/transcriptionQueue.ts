@@ -7,6 +7,7 @@ export function createTranscriptionQueue(deps: {
   store: LocalStore; engine: TranscriberEngine; getModelId(): Promise<string>;
   now(): number; newId(): string; summarize(noteId: string): Promise<void>;
   events: TranscriptionQueueEvents;
+  ensureModel?(): Promise<void>;
   hasPendingJournal?(noteId: string): boolean;
 }) {
   // Reset operations wait for at most one chunk, never a whole recording/summary.
@@ -36,7 +37,10 @@ export function createTranscriptionQueue(deps: {
     let modelId = note.modelName ?? await deps.getModelId();
     if (!await deps.engine.isModelReady(modelId)) {
       modelId = await deps.getModelId();
-      if (!await deps.engine.isModelReady(modelId)) return 'idle';
+      if (!await deps.engine.isModelReady(modelId)) {
+        void deps.ensureModel?.();
+        return 'idle';
+      }
     }
     await deps.engine.load(modelId);
     if (modelId !== note.modelName) await deps.store.updateNote(noteId, { modelName: modelId });
@@ -65,7 +69,8 @@ export function createTranscriptionQueue(deps: {
     }
     failures.delete(key);
     const merged = mergeSegments(existing, incoming, chunk.startMs, noteId, deps.newId, chunk.seq);
-    await deps.store.putSegments(noteId, merged.slice(existing.length));
+    // New segments plus any existing tail that the boundary merge rewrote (upsert by id).
+    await deps.store.putSegments(noteId, merged.filter((segment, i) => i >= existing.length || segment !== existing[i]));
     const durationMs = chunk.durationMs || Math.max(0, ...incoming.map(segment => segment.endMs));
     await deps.store.updateChunk(noteId, chunk.seq, { transcribedAt: new Date(deps.now()).toISOString(), durationMs });
     const current = await deps.store.getNote(noteId);

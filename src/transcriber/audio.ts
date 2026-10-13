@@ -117,18 +117,26 @@ export function resample(audio: Float32Array, fromRate: number, toRate = SAMPLE_
   return output;
 }
 
-/** Allocate only the next transferable window; never transfer the full recording. */
+/** Whisper reads exactly 30s per pass; longer single inputs trigger
+ * transformers.js long-form mode, which loops or hangs on WASM. Split the
+ * (previous tail + current) timeline into balanced windows of at most 30s
+ * that overlap by OVERLAP_MS. Allocates one transferable window at a time. */
+export const WEB_WINDOW_MS = 30_000;
 export function* webAudioWindows(current: Float32Array, previous?: Float32Array) {
-  const limit = SAMPLE_RATE * WINDOW_MS / 1000;
+  const limit = SAMPLE_RATE * WEB_WINDOW_MS / 1000;
   const overlap = SAMPLE_RATE * OVERLAP_MS / 1000;
-  const tail = previous?.subarray(Math.max(0, previous.length - overlap));
-  for (let start = 0; start < current.length;) {
-    const prefix = start === 0 ? tail?.length ?? 0 : overlap;
-    const end = Math.min(current.length, start + limit - prefix);
-    const audio = start === 0 && prefix
-      ? concatAudio(tail!, current.subarray(start, end))
-      : current.slice(start - prefix, end);
-    yield { audio, startMs: (start - prefix) * 1000 / SAMPLE_RATE };
-    start = end;
+  const tail = previous?.subarray(Math.max(0, previous.length - overlap)) ?? new Float32Array(0);
+  const total = tail.length + current.length;
+  if (total === 0) return;
+  const count = Math.max(1, Math.ceil((total - overlap) / (limit - overlap)));
+  const size = Math.min(limit, Math.ceil((total - overlap) / count) + overlap);
+  const step = size - overlap;
+  for (let start = 0; ; start += step) {
+    const end = Math.min(total, start + size);
+    const audio = start < tail.length
+      ? concatAudio(tail.subarray(start), current.subarray(0, end - tail.length))
+      : current.slice(start - tail.length, end - tail.length);
+    yield { audio, startMs: (start - tail.length) * 1000 / SAMPLE_RATE };
+    if (end >= total) return;
   }
 }

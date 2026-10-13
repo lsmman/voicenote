@@ -1,6 +1,12 @@
 import type { Memo, MemoKind, Note, Segment } from '../core/types';
 import type { RecorderState, RecorderWarning } from '../recorder/types';
 
+export type ModelState =
+  | { kind: 'ready'; modelId: string }
+  | { kind: 'downloading'; modelId: string; progress: number } // 0..1
+  | { kind: 'waiting-wifi'; modelId: string; sizeBytes: number }
+  | { kind: 'error'; modelId: string; message: string };
+
 export interface LiveSessionState {
   noteId: string;
   state: RecorderState;
@@ -32,6 +38,11 @@ export interface Pipeline {
   // Background work (call on app start / foreground)
   resumeQueues(): Promise<void>;
   onNoteProgress(listener: (noteId: string, done: number, total: number) => void): () => void;
+
+  // Model auto-download: started automatically when transcription is needed
+  // and the selected model is missing (native: Wi-Fi only; web: always).
+  onModelState(listener: (s: ModelState) => void): () => void;
+  downloadModelNow(): Promise<void>; // user-confirmed download (e.g. on cellular)
 
   retranscribe(noteId: string, modelId: string): Promise<void>;
   resummarize(noteId: string): Promise<void>;

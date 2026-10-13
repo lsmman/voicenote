@@ -1,4 +1,5 @@
-import { getNetworkStateAsync } from 'expo-network';
+import { Platform } from 'react-native';
+import { NetworkStateType, getNetworkStateAsync } from 'expo-network';
 import { getModelId } from '../core/settings';
 import { store } from '../store';
 import { recorder } from '../recorder';
@@ -10,6 +11,15 @@ import { deleteLocalFile } from './localFile';
 
 export const pipeline = createPipeline({
   store, recorder, engine, sync, getModelId, now: Date.now,
+  platform: Platform.OS === 'web' ? 'web' : 'native',
+  async getNetworkType() {
+    if (Platform.OS === 'web') return 'wifi';
+    const state = await getNetworkStateAsync();
+    if (state.isConnected === false || state.isInternetReachable === false) return 'none';
+    if (state.type === NetworkStateType.WIFI || state.type === NetworkStateType.ETHERNET) return 'wifi';
+    if (state.type === NetworkStateType.CELLULAR) return 'cellular';
+    return state.type === NetworkStateType.NONE ? 'none' : 'unknown';
+  },
   async isSignedIn() {
     const { data, error } = await supabase.auth.getSession();
     return !error && data.session !== null;

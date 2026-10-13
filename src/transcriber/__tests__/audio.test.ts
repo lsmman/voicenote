@@ -134,9 +134,33 @@ test('web windows cap transfers, overlap one second and retain the final sample'
   const source = new Float32Array(9600001);
   source[source.length - 1] = 0.75;
   const windows = [...webAudioWindows(source, new Float32Array(16000))];
-  expect(windows.map(({ audio, startMs }) => [audio.length, startMs]))
-    .toEqual([[9600000, -1000], [32001, 598000]]);
-  expect(windows[1].audio.at(-1)).toBe(0.75);
-  expect(windows[0].audio.buffer).not.toBe(source.buffer);
-  expect(windows[1].audio.buffer).not.toBe(source.buffer);
+  expect(windows[0].startMs).toBe(-1000);
+  for (const { audio } of windows) expect(audio.length).toBeLessThanOrEqual(30 * 16000);
+  expect(windows.at(-1)!.audio.at(-1)).toBe(0.75);
+  for (const { audio } of windows) expect(audio.buffer).not.toBe(source.buffer);
+});
+
+describe('web windows stay within Whisper\'s 30s input', () => {
+  const sr = 16000;
+  const windows = (seconds: number, prevSeconds?: number) => [...webAudioWindows(
+    new Float32Array(Math.round(seconds * sr)), prevSeconds ? new Float32Array(prevSeconds * sr) : undefined,
+  )];
+  test('a 74s import becomes balanced windows of at most 30s each', () => {
+    const w = windows(74);
+    expect(w.length).toBe(3);
+    for (const { audio } of w) expect(audio.length).toBeLessThanOrEqual(30 * sr);
+    expect(Math.min(...w.map(x => x.audio.length))).toBeGreaterThan(20 * sr);
+    expect(w[0].startMs).toBe(0);
+  });
+  test('a 30s recorded chunk with 1s overlap is split evenly, not 30s + 2s', () => {
+    const w = windows(30, 30);
+    expect(w.length).toBe(2);
+    expect(w[0].startMs).toBe(-1000);
+    expect(Math.min(...w.map(x => x.audio.length))).toBeGreaterThan(10 * sr);
+  });
+  test('windows cover the whole input with overlap', () => {
+    const w = windows(74);
+    const last = w[w.length - 1];
+    expect(last.startMs + last.audio.length * 1000 / sr).toBeCloseTo(74000, -1);
+  });
 });

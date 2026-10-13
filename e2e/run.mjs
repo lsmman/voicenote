@@ -28,9 +28,26 @@ const context = await chromium.launchPersistentContext(PROFILE, {
     '--autoplay-policy=no-user-gesture-required',
   ],
 });
+await context.addInitScript(() => {
+  const Native = window.Worker;
+  window.Worker = class extends Native {
+    constructor(...a) {
+      super(...a);
+      this.addEventListener('message', ({ data }) => {
+        if (data?.kind === 'progress') return;
+        console.info(`[worker->page] id=${data?.id} kind=${data?.kind} ${data?.kind === 'error' ? data.message : `segments=${data?.segments?.length}`}`);
+      });
+      this.addEventListener('error', e => console.error(`[worker error] ${e.message}`));
+    }
+    postMessage(msg, t) {
+      console.info(`[page->worker] id=${msg?.id} kind=${msg?.kind} ${msg?.audio ? `samples=${msg.audio.length}` : ''}`);
+      return super.postMessage(msg, t);
+    }
+  };
+});
 const page = context.pages()[0] ?? await context.newPage();
 const consoleLines = [];
-page.on('console', m => { if (['error', 'warning'].includes(m.type())) consoleLines.push(`[${m.type()}] ${m.text()}`); });
+page.on('console', m => { if (m.text().startsWith('[worker') || m.text().startsWith('[page->')) log(m.text()); if (['error', 'warning'].includes(m.type()) || m.text().startsWith('[worker') || m.text().startsWith('[page->')) consoleLines.push(`[${m.type()}] ${m.text()}`); });
 page.on('worker', w => { log('worker started', w.url()); w.on('close', () => log('worker closed', w.url())); });
 page.on('requestfailed', r => consoleLines.push(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`));
 page.on('pageerror', e => consoleLines.push(`[pageerror] ${e.message}`));
@@ -62,7 +79,7 @@ const summarize = d => d.empty ? 'IDB empty' : ({
   notes: d.notes.map(n => `${n.id.slice(0, 8)} "${n.title}" ${n.status} ${n.durationMs}ms model=${n.modelName}`),
   chunks: d.chunks.map(c => `${c.noteId.slice(0, 8)}#${c.seq} start=${c.startMs} dur=${c.durationMs} ${c.mimeType} tx=${!!c.transcribedAt}`),
   audio: d.audio, memos: d.memos.map(m => `${m.noteId.slice(0, 8)} @${m.atMs} ${m.kind} "${m.text}"`),
-  segments: d.segments.length,
+  segments: d.segments.length, gaps: d.notes.map(n => JSON.stringify(n.gaps)),
 });
 
 async function boot() {
@@ -203,9 +220,29 @@ try {
     else if (p === 'transcribe') await transcribeRecorded();
     else if (p === 'import') await importFile();
     else if (p === 'dump') { await page.goto(BASE, { waitUntil: 'networkidle' }); log(JSON.stringify(summarize(await idb()), null, 1)); dumpTranscripts(await idb(), 'dump'); }
+    else if (p === 'decode') {
+      await page.goto(BASE, { waitUntil: 'networkidle' });
+      const r = await page.evaluate(async () => {
+        const db = await new Promise((res, rej) => { const q = indexedDB.open('voicenote'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+        const get = (store, key) => new Promise((res, rej) => { const q = db.transaction(store).objectStore(store).get(key); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+        const all = store => new Promise((res, rej) => { const q = db.transaction(store).objectStore(store).getAll(); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+        const out = [];
+        for (const c of await all('chunks')) {
+          const blob = await get('audio', c.localPath);
+          const ctx = new AudioContext({ sampleRate: 16000 });
+          try { const b = await ctx.decodeAudioData(await blob.arrayBuffer()); out.push(`${c.localPath} ${c.mimeType} blob=${blob.type}/${blob.size} OK ${b.duration.toFixed(1)}s ${b.sampleRate}Hz`); }
+          catch (e) { out.push(`${c.localPath} ${c.mimeType} blob=${blob?.type}/${blob?.size} DECODE FAIL ${e.name}: ${e.message}`); }
+          finally { await ctx.close(); }
+        }
+        out.push('canPlay mp4/aac=' + document.createElement('audio').canPlayType('audio/mp4; codecs="mp4a.40.2"'));
+        return out;
+      });
+      log('DECODE', r.join('\n'));
+    }
     else if (p === 'detail') {
+      await page.goto(BASE, { waitUntil: 'networkidle' });
       const d = await idb();
-      for (const n of d.notes) { await page.goto(`${BASE}/note/${n.id}`, { waitUntil: 'networkidle' }); await sleep(4000); await shot(`09-detail-${n.id.slice(0, 8)}`); log('DETAIL', n.title, (await page.locator('body').innerText()).slice(0, 1200)); }
+      for (const n of d.notes) { await page.goto(`${BASE}/note/${n.id}`, { waitUntil: 'networkidle' }); await sleep(4000); await page.getByText('전사문', { exact: true }).click().catch(() => {}); await sleep(1000); await shot(`09-detail-${n.id.slice(0, 8)}`); log('DETAIL', n.title, (await page.locator('body').innerText()).slice(0, 1200)); }
     }
   }
 } catch (e) {

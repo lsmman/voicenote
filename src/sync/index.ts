@@ -112,11 +112,15 @@ export const sync: SyncService = {
     return data.signedUrl;
   },
   async summarize(req) {
-    const session = await requireSession();
-    const base = (process.env.EXPO_PUBLIC_API_BASE ?? '').replace(/\/$/, '');
+    const { data: { session } } = await supabase.auth.getSession();
+    const base = (process.env.EXPO_PUBLIC_API_BASE ?? (Platform.OS === 'web' ? '' : 'https://voicenote-ten-alpha.vercel.app')).replace(/\/$/, '');
     const response = await fetch(`${base}/api/summarize`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify(req),
+      method: 'POST', headers: {
+        'Content-Type': 'application/json', 'x-voicenote-client': 'app',
+        ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      }, body: JSON.stringify(req),
     });
+    if (response.status === 429) throw Object.assign(new Error('요약 요청이 많아요. 잠시 후 다시 시도해 주세요'), { status: 429 });
     if (!response.ok) throw new Error(`요약 요청 실패 (${response.status})`);
     return response.json();
   },

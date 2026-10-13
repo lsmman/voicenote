@@ -17,7 +17,7 @@ const body = { noteId: 'n', title: '회의', segments: [{ startMs: 1234, endMs: 
 const output = { summary: [{ text: '인사', atMs: 1234 }], keywords: [], todos: [] };
 async function call(overrides: Partial<VercelRequest> = {}) {
   const req = { method: 'POST', headers: { authorization: 'Bearer token' }, body, ...overrides } as VercelRequest;
-  const res = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis(), setHeader: jest.fn() };
+  const res = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis(), setHeader: jest.fn(), end: jest.fn() };
   await handler(req, res as unknown as VercelResponse);
   return res;
 }
@@ -27,6 +27,8 @@ beforeEach(() => {
   process.env.SUPABASE_ANON_KEY = 'anon';
   process.env.ANTHROPIC_API_KEY = 'test';
   delete process.env.SUMMARY_DAILY_LIMIT;
+  delete process.env.ALLOWED_ORIGINS;
+  delete process.env.ANON_SUMMARY_PER_HOUR;
   mockRpc.mockResolvedValue({ data: true, error: null });
   mockGetUser.mockResolvedValue({ data: { user: { id: 'u' } }, error: null });
   mockFinalMessage.mockResolvedValue({ stop_reason: 'end_turn', parsed_output: output });
@@ -37,8 +39,8 @@ test('POST only', async () => {
   expect(res.setHeader).toHaveBeenCalledWith('Allow', 'POST');
   expect(mockGetUser).not.toHaveBeenCalled();
 });
-test('requires and verifies the bearer token', async () => {
-  expect((await call({ headers: {} })).status).toHaveBeenCalledWith(401);
+test('rejects missing anonymous client header and verifies supplied bearer tokens', async () => {
+  expect((await call({ headers: {} })).status).toHaveBeenCalledWith(403);
   mockGetUser.mockResolvedValue({ data: { user: null }, error: { message: 'invalid' } });
   expect((await call()).status).toHaveBeenCalledWith(401);
   expect(mockGetUser).toHaveBeenCalledWith('token');
@@ -127,4 +129,90 @@ test('does not consume quota for unauthorized or invalid requests', async () => 
   await call({ headers: {} });
   await call({ body: {} });
   expect(mockRpc).not.toHaveBeenCalled();
+});
+
+let anonymousIp = 0;
+function anonymousHeaders(extra: Record<string, string> = {}) {
+  return { host: 'app.example', 'x-voicenote-client': 'app', 'x-forwarded-for': `192.0.2.${++anonymousIp}`, ...extra };
+}
+
+test('anonymous summaries work without Supabase configuration', async () => {
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_ANON_KEY;
+  const res = await call({ headers: anonymousHeaders() });
+  expect(res.status).toHaveBeenCalledWith(200);
+  expect(res.json).toHaveBeenCalledWith(output);
+  expect(createClient).not.toHaveBeenCalled();
+  expect(mockRpc).not.toHaveBeenCalled();
+});
+
+test('a bearer token without Supabase configuration still uses anonymous limits', async () => {
+  delete process.env.SUPABASE_URL;
+  process.env.ANON_SUMMARY_PER_HOUR = '1';
+  const headers = anonymousHeaders({ authorization: 'Bearer token' });
+  expect((await call({ headers })).status).toHaveBeenCalledWith(200);
+  expect((await call({ headers })).status).toHaveBeenCalledWith(429);
+  expect(mockGetUser).not.toHaveBeenCalled();
+});
+
+test('allows same-origin browsers without the app header', async () => {
+  expect((await call({ headers: { host: 'app.example', origin: 'https://app.example' } })).status).toHaveBeenCalledWith(200);
+  expect(mockRpc).not.toHaveBeenCalled();
+});
+
+test('uses the explicit allowlist and checks Referer origins', async () => {
+  process.env.ALLOWED_ORIGINS = ' https://allowed.example, http://localhost:8081 ';
+  expect((await call({ headers: anonymousHeaders({ origin: 'https://allowed.example', referer: 'https://allowed.example/note/1' }) })).status).toHaveBeenCalledWith(200);
+  expect((await call({ headers: anonymousHeaders({ origin: 'http://localhost:8081' }) })).status).toHaveBeenCalledWith(200);
+  const rejected: Record<string, string>[] = [
+    { origin: 'https://app.example' }, { origin: 'https://allowed.example.evil.test' },
+    { origin: 'null' }, { referer: 'https://evil.test/page' }, { referer: 'invalid' },
+  ];
+  for (const extra of rejected) {
+    expect((await call({ headers: anonymousHeaders(extra) })).status).toHaveBeenCalledWith(403);
+  }
+  expect((await call({ headers: { host: 'app.example', referer: 'https://allowed.example/note' } })).status).toHaveBeenCalledWith(403);
+});
+
+test('supports preflight for allowed browser origins only', async () => {
+  const res = await call({ method: 'OPTIONS', headers: { host: 'app.example', origin: 'https://app.example' } });
+  expect(res.status).toHaveBeenCalledWith(204);
+  expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Origin', 'https://app.example');
+  expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-voicenote-client');
+  expect((await call({ method: 'OPTIONS', headers: { origin: 'https://evil.test' } })).status).toHaveBeenCalledWith(405);
+  expect(mockStream).not.toHaveBeenCalled();
+});
+
+test('anonymous sliding window uses the first forwarded IP and expires individual requests', async () => {
+  process.env.ANON_SUMMARY_PER_HOUR = '2';
+  const headers = anonymousHeaders();
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(10_000_000);
+  try {
+    expect((await call({ headers })).status).toHaveBeenCalledWith(200);
+    clock.mockReturnValue(10_000_000 + 30 * 60_000);
+    expect((await call({ headers })).status).toHaveBeenCalledWith(200);
+    const limited = await call({ headers: { ...headers, 'x-forwarded-for': `${headers['x-forwarded-for']}, 203.0.113.1` } });
+    expect(limited.status).toHaveBeenCalledWith(429);
+    expect(limited.json).toHaveBeenCalledWith({ error: '요약 요청이 많아요. 잠시 후 다시 시도해 주세요' });
+    expect((await call({ headers: anonymousHeaders() })).status).toHaveBeenCalledWith(200);
+    clock.mockReturnValue(10_000_000 + 60 * 60_000);
+    expect((await call({ headers })).status).toHaveBeenCalledWith(200);
+    expect((await call({ headers })).status).toHaveBeenCalledWith(429);
+  } finally { clock.mockRestore(); }
+});
+
+test.each([undefined, '', 'bad', '0', '-1', '1.5'])('defaults anonymous limit to 10 for %p', async limit => {
+  if (limit !== undefined) process.env.ANON_SUMMARY_PER_HOUR = limit;
+  const headers = anonymousHeaders();
+  for (let i = 0; i < 10; i++) expect((await call({ headers })).status).toHaveBeenCalledWith(200);
+  expect((await call({ headers })).status).toHaveBeenCalledWith(429);
+  expect(mockStream).toHaveBeenCalledTimes(10);
+});
+
+test('invalid and oversized anonymous requests do not consume quota', async () => {
+  process.env.ANON_SUMMARY_PER_HOUR = '1';
+  const headers = anonymousHeaders();
+  expect((await call({ headers, body: {} })).status).toHaveBeenCalledWith(400);
+  expect((await call({ headers, body: 'x'.repeat(4194305) })).status).toHaveBeenCalledWith(413);
+  expect((await call({ headers })).status).toHaveBeenCalledWith(200);
 });

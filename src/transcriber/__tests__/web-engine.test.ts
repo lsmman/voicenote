@@ -100,27 +100,27 @@ test('readiness requires a repo cache entry and clears evicted markers', async (
 
 test('long audio windows are sent sequentially with owned transfers and absolute offsets', async () => {
   await load();
-  const audio = new Float32Array(16000 * 601);
+  const audio = new Float32Array(16000 * 74);
   mockDecode.mockResolvedValue({ sampleRate: 16000, numberOfChannels: 1, getChannelData: () => audio });
   const promise = engine.transcribeChunk(chunk, { language: 'ko' });
   await flush();
   expect(target().sent).toHaveLength(2); // load + first inference, not all windows
-  const first = target().sent[1];
-  expect(first.request.kind).toBe('transcribe');
-  if (first.request.kind !== 'transcribe') throw new Error('Expected audio');
-  expect(first.request.audio).toHaveLength(16000 * 600);
-  expect(first.transfer).toEqual([first.request.audio.buffer]);
-  expect(first.request.audio.buffer).not.toBe(audio.buffer);
-  target().reply();
-  await flush();
-  const second = target().sent[2];
-  if (second.request.kind !== 'transcribe') throw new Error('Expected audio');
-  expect(second.request.audio).toHaveLength(16000 * 2);
-  target().reply([{ text: 'end', startMs: 1000, endMs: 2000 }]);
-  expect(await promise).toEqual([
-    { text: 'test', startMs: 2000, endMs: 3000 },
-    { text: 'end', startMs: 600000, endMs: 601000 },
-  ]);
+  const lengths: number[] = [];
+  for (let i = 1; i <= 3; i++) {
+    const sent = target().sent[i];
+    if (sent.request.kind !== 'transcribe') throw new Error('Expected audio');
+    lengths.push(sent.request.audio.length);
+    expect(sent.transfer).toEqual([sent.request.audio.buffer]);
+    expect(sent.request.audio.buffer).not.toBe(audio.buffer);
+    target().reply(i === 3 ? [{ text: 'end', startMs: 1000, endMs: 2000 }] : undefined);
+    await flush();
+  }
+  expect(lengths.every(n => n <= 16000 * 30)).toBe(true);
+  const result = await promise;
+  expect(result[0]).toEqual({ text: 'test', startMs: 2000, endMs: 3000 });
+  const lastStart = (16000 * 74 - lengths[2]) / 16; // ms offset of the last window
+  expect(result.at(-1)!.text).toBe('end');
+  expect(result.at(-1)!.startMs).toBeCloseTo(lastStart + 1000, 0);
   expect(jest.getTimerCount()).toBe(0);
 });
 

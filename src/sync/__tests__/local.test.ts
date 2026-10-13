@@ -33,7 +33,9 @@ test.each(['both', 'url', 'key'])('imports safely with missing %s configuration'
   await expect(supabase.from('notes').select('*').limit(1)).rejects.toThrow(message);
   await expect(supabase.rpc('sync_pull_note_detail', { p_note_id: 'note' })).rejects.toThrow(message);
   await expect(supabase.storage.from('audio').createSignedUrl('note/0.m4a', 60)).rejects.toThrow(message);
-  for (const method of Object.values(sync)) {
+  // summarize goes straight to /api/summarize and works without sync.
+  for (const [name, method] of Object.entries(sync)) {
+    if (name === 'summarize') continue;
     await expect((method as () => Promise<unknown>)()).rejects.toThrow(message);
   }
 });

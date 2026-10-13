@@ -10,9 +10,9 @@ export default function LoginScreen() {
   const c = useTheme(); const task = useTask(); const { session } = useSession();
   const [email, setEmail] = useState(''); const [sent, setSent] = useState(false);
   const submit = () => task.run(async () => { await signInWithEmail(email.trim()); setSent(true); }, '로그인 메일을 보내지 못했어요. 이메일과 연결 상태를 확인해 주세요.');
-  return <Screen><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.screen}><View style={styles.content}>
+  return <Screen><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.screen}><View style={[styles.content, { maxWidth: 420 }]}>
     <Text style={[styles.title, { color: c.text }]}>어디서든 이어지는 노트</Text>
-    {isSyncConfigured && <Text style={[styles.body, { color: c.muted }]}>이메일로 로그인하면 노트를 동기화하고 요약을 만들 수 있어요.</Text>}
+    {isSyncConfigured && <Text style={[styles.small, { color: c.muted }]}>이메일로 로그인하면 노트를 동기화하고 요약을 만들 수 있어요.</Text>}
     {!isSyncConfigured ? <Notice text="동기화 서버가 설정되지 않아 이 기기에만 저장됩니다" /> : session ? <Notice text={`${session.user.email ?? ''} 계정으로 로그인했어요.`} /> : <>
       <Input accessibilityLabel="이메일" placeholder="이메일 주소" autoComplete="email" keyboardType="email-address" autoCapitalize="none" autoCorrect={false} value={email} onChangeText={value => { setEmail(value); setSent(false); }} returnKeyType="send" onSubmitEditing={() => { if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) void submit(); }} />
       <Button title={task.busy ? '보내는 중…' : '로그인 링크 받기'} primary disabled={task.busy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())} onPress={() => { void submit(); }} />

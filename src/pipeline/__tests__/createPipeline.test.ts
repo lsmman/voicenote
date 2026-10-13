@@ -84,7 +84,7 @@ test('summary failure still finishes; resummarize retries successfully', async (
   expect(f.notes.get(id)?.status).toBe('done');
 });
 
-test('offline summary waits for foreground; signed-out summary finishes without API call', async () => {
+test('offline summary waits for foreground; signed-out summary calls API', async () => {
   const f = fakes();
   jest.mocked(f.deps.isOnline).mockResolvedValue(false);
   const p = createPipeline(f.deps);
@@ -95,7 +95,7 @@ test('offline summary waits for foreground; signed-out summary finishes without 
   await p.resumeQueues(); expect(f.notes.get(id)?.status).toBe('done');
   jest.mocked(f.deps.isSignedIn).mockResolvedValue(false);
   await p.resummarize(id);
-  expect(f.deps.sync.summarize).toHaveBeenCalledTimes(1);
+  expect(f.deps.sync.summarize).toHaveBeenCalledTimes(2);
   expect(f.notes.get(id)?.status).toBe('done');
 });
 
@@ -305,4 +305,127 @@ test('late summary cannot mark a retranscribing note done', async () => {
   await p.retranscribe('n', 'missing');
   release({ summary: [], keywords: [], todos: [] }); await work;
   expect(f.notes.get('n')?.status).toBe('transcribing'); expect(f.summaries.has('n')).toBe(false);
+});
+
+function missingModel() {
+  const f = fakes();
+  let ready = false;
+  jest.mocked(f.deps.engine.isModelReady).mockImplementation(async () => ready);
+  f.deps.engine.listModels = () => [{ id: 'test-model', label: 'Test', sizeBytes: 104857600, recommended: true }];
+  const download = jest.spyOn(f.deps.engine, 'downloadModel').mockImplementation(async () => { ready = true; });
+  return { ...f, download, installed: () => { ready = true; } };
+}
+
+test('wifi download completes stopped recording automatically without foreground resume', async () => {
+  const f = missingModel();
+  let release!: () => void;
+  f.download.mockImplementation(async () => { await new Promise<void>(r => { release = r; }); f.installed(); });
+  const p = createPipeline(f.deps); const states = jest.fn(); p.onModelState(states);
+  expect(states).toHaveBeenCalledTimes(1);
+  const id = await p.startRecording(); f.events().onChunk?.(chunk(id)); await p.stopRecording();
+  expect(f.notes.get(id)?.status).toBe('transcribing');
+  release(); await jest.advanceTimersByTimeAsync(0);
+  expect(f.notes.get(id)?.status).toBe('done');
+  expect((await f.deps.store.listSegments(id))[0].text).toBe('chunk 0');
+  expect(states).toHaveBeenLastCalledWith({ kind: 'ready', modelId: 'test-model' });
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+test.each(['cellular', 'unknown', 'none'] as const)('%s waits, then wifi polling downloads and clears timer', async network => {
+  const f = missingModel(); jest.mocked(f.deps.getNetworkType).mockResolvedValue(network);
+  f.notes.set('pending', note('pending', 'transcribing'));
+  const p = createPipeline(f.deps); const states = jest.fn(); p.onModelState(states);
+  await p.resumeQueues(); await jest.advanceTimersByTimeAsync(0);
+  expect(states).toHaveBeenLastCalledWith({ kind: 'waiting-wifi', modelId: 'test-model', sizeBytes: 104857600 });
+  expect(f.download).not.toHaveBeenCalled();
+  jest.mocked(f.deps.getNetworkType).mockResolvedValue('wifi');
+  await jest.advanceTimersByTimeAsync(30_000);
+  expect(f.download).toHaveBeenCalledTimes(1); expect(jest.getTimerCount()).toBe(0);
+});
+
+test('manual cellular download shares a single flight with all automatic requests', async () => {
+  const f = missingModel(); jest.mocked(f.deps.getNetworkType).mockResolvedValue('cellular');
+  let release!: () => void;
+  f.download.mockImplementation(async () => { await new Promise<void>(r => { release = r; }); f.installed(); });
+  const p = createPipeline(f.deps); await p.resumeQueues(); await jest.advanceTimersByTimeAsync(0);
+  const first = p.downloadModelNow(); const second = p.downloadModelNow();
+  expect(first).toBe(second);
+  await p.resumeQueues(); await jest.advanceTimersByTimeAsync(0);
+  expect(f.download).toHaveBeenCalledTimes(1);
+  release(); await first; await jest.advanceTimersByTimeAsync(0);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+test('download failure emits error and retries after 30s, 2m, then 10m without drain bypass', async () => {
+  const f = missingModel(); f.download.mockRejectedValueOnce(new Error('network failed')).mockRejectedValueOnce(new Error('again')).mockRejectedValueOnce(new Error('again'));
+  const p = createPipeline(f.deps); const states = jest.fn(); p.onModelState(states);
+  await p.downloadModelNow();
+  expect(states).toHaveBeenLastCalledWith({ kind: 'error', modelId: 'test-model', message: 'network failed' });
+  for (const delay of [30_000, 120_000, 600_000]) {
+    const calls = f.download.mock.calls.length;
+    await p.resumeQueues(); await jest.advanceTimersByTimeAsync(delay - 1);
+    expect(f.download).toHaveBeenCalledTimes(calls);
+    await jest.advanceTimersByTimeAsync(1); expect(f.download).toHaveBeenCalledTimes(calls + 1);
+  }
+  expect(states).toHaveBeenLastCalledWith({ kind: 'ready', modelId: 'test-model' });
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+test('web ignores network gating and throttles download progress to twice per second', async () => {
+  const f = missingModel(); f.deps.platform = 'web'; jest.mocked(f.deps.getNetworkType).mockResolvedValue('none');
+  f.notes.set('pending', note('pending', 'transcribing'));
+  let progress!: NonNullable<Parameters<typeof f.deps.engine.downloadModel>[1]>;
+  let release!: () => void;
+  f.download.mockImplementation(async (_id, cb) => { progress = cb!; await new Promise<void>(r => { release = r; }); f.installed(); });
+  const p = createPipeline(f.deps); const states = jest.fn(); const unsubscribe = p.onModelState(states);
+  await p.resumeQueues(); await jest.advanceTimersByTimeAsync(0);
+  expect(f.download).toHaveBeenCalledTimes(1);
+  const work = p.downloadModelNow(); states.mockClear();
+  for (let i = 1; i <= 20; i++) { await jest.advanceTimersByTimeAsync(50); progress({ modelId: 'test-model', receivedBytes: i, totalBytes: 20 }); }
+  expect(states).toHaveBeenCalledTimes(2);
+  expect(states).toHaveBeenLastCalledWith({ kind: 'downloading', modelId: 'test-model', progress: 1 });
+  unsubscribe(); release(); await work; await jest.advanceTimersByTimeAsync(0);
+  expect(states).toHaveBeenCalledTimes(2); expect(jest.getTimerCount()).toBe(0);
+});
+
+
+test('signed-out foreground resume retries done notes without summaries', async () => {
+  const f = fakes();
+  jest.mocked(f.deps.isSignedIn).mockResolvedValue(false);
+  await f.deps.store.createNote(note('anonymous', 'done'));
+  const p = createPipeline(f.deps);
+  await p.resumeQueues();
+  expect(f.summaries.has('anonymous')).toBe(true);
+  expect(f.deps.sync.summarize).toHaveBeenCalledTimes(1);
+  expect(f.deps.sync.uploadChunk).not.toHaveBeenCalled();
+});
+
+test('manual resummarize exposes 429 while automatic retries preserve the done note', async () => {
+  const f = fakes();
+  jest.mocked(f.deps.isSignedIn).mockResolvedValue(false);
+  await f.deps.store.createNote(note('limited', 'done'));
+  const error = Object.assign(new Error('요약 요청이 많아요. 잠시 후 다시 시도해 주세요'), { status: 429 });
+  jest.mocked(f.deps.sync.summarize).mockRejectedValueOnce(error).mockRejectedValueOnce(error);
+  const p = createPipeline(f.deps);
+  await expect(p.resummarize('limited')).rejects.toBe(error);
+  expect(f.notes.get('limited')?.status).toBe('done');
+  await expect(p.resumeQueues()).resolves.toBeUndefined();
+  expect(f.summaries.has('limited')).toBe(false);
+  await p.resumeQueues();
+  expect(f.summaries.has('limited')).toBe(true);
+});
+
+test('first launch with no pending notes does not start a model download', async () => {
+  const f = missingModel();
+  const p = createPipeline(f.deps);
+  await p.resumeQueues(); await jest.advanceTimersByTimeAsync(0);
+  expect(f.download).not.toHaveBeenCalled();
+});
+
+test('resume with a note waiting for transcription starts the model download', async () => {
+  const f = missingModel();
+  f.notes.set('n', note('n', 'transcribing'));
+  const p = createPipeline(f.deps);
+  await p.resumeQueues(); await jest.advanceTimersByTimeAsync(0);
+  expect(f.download).toHaveBeenCalled();
 });

@@ -10,6 +10,7 @@ import { createTranscriptionQueue } from './transcriptionQueue';
 import { prepareImportedAudio } from './localFile';
 import { withTimeout } from './timeout';
 import { createJournal } from './journal';
+import { createModelDownload } from './modelDownload';
 
 export interface PipelineDeps {
   store: LocalStore;
@@ -18,6 +19,8 @@ export interface PipelineDeps {
   sync: SyncService;
   getModelId(): Promise<string>;
   isOnline(): Promise<boolean>;
+  getNetworkType(): Promise<'wifi' | 'cellular' | 'none' | 'unknown'>;
+  platform: 'web' | 'native';
   now(): number;
   isSignedIn(): Promise<boolean>;
 }
@@ -32,8 +35,8 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
   const listeners = new Set<(state: LiveSessionState | null) => void>();
   const progressListeners = new Set<(noteId: string, done: number, total: number) => void>();
   // The fixed Note/Summary contracts have no error field. Missing summary remains
-  // the durable retry signal after restart; this set also remembers failed refreshes.
-  const summaryFailures = new Set<string>();
+  // the durable retry signal after restart; this map also remembers failed refreshes.
+  const summaryFailures = new Map<string, unknown>();
   const summaries = new Map<string, Promise<void>>();
   const summaryVersions = new Map<string, number>();
   const notify = (levelOnly = false) => {
@@ -55,10 +58,6 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
       if (!note) throw new Error('Note not found');
       if (!['done', 'summarizing'].includes(note.status)) return;
       try {
-        if (!await deps.isSignedIn()) {
-          if (currentVersion()) await store.updateNote(noteId, { status: 'done' });
-          return;
-        }
         // Keep summarizing while offline; foreground resume retries automatically.
         if (!await deps.isOnline()) return;
         const response = await withTimeout(deps.sync.summarize({
@@ -68,8 +67,8 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
         if (!currentVersion()) return;
         await store.putSummary({ ...response, noteId, createdAt: new Date(deps.now()).toISOString() });
         summaryFailures.delete(noteId);
-      } catch {
-        if (currentVersion()) summaryFailures.add(noteId);
+      } catch (error) {
+        if (currentVersion()) summaryFailures.set(noteId, error);
       }
       if (currentVersion()) await store.updateNote(noteId, { status: 'done' });
     })().finally(() => { if (summaries.get(noteId) === result) summaries.delete(noteId); });
@@ -77,9 +76,11 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
     return result;
   }
 
+  const model = createModelDownload(deps, kick);
   const uploads = createUploadQueue(deps);
   const transcription = createTranscriptionQueue({
     ...deps, newId, summarize,
+    ensureModel: model.ensureModel,
     hasPendingJournal: noteId => journal.pending(noteId).length > 0,
     events: {
       onSegments(noteId, segments) {
@@ -125,9 +126,12 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
   const chunkEnd = (chunks: AudioChunk[]) => Math.max(0, ...chunks.map(chunk => chunk.startMs + chunk.durationMs));
 
   const pipeline: Pipeline = {
+    onModelState: model.subscribe,
+    downloadModelNow: () => model.ensureModel(true),
     async startRecording(title) {
       if (live || starting || stopping) throw new Error('Recording already active');
       starting = true;
+      void model.ensureModel();
       const date = new Date(deps.now());
       const pad = (value: number) => String(value).padStart(2, '0');
       const defaultTitle = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())} 녹음`;
@@ -212,6 +216,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
     },
     subscribe(listener) { listeners.add(listener); notify(); return () => { listeners.delete(listener); }; },
     async importFile(uri, name, mimeType) {
+      void model.ensureModel();
       const note = makeNote(name, 'recording');
       await store.createNote(note);
       try {
@@ -227,6 +232,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
     },
     async findUnfinished() { return (await store.listNotes()).filter(note => note.status === 'recording' && note.id !== live?.noteId); },
     async recover(noteId) {
+      void model.ensureModel();
       if (live?.noteId === noteId) throw new Error('Cannot recover an active recording');
       const note = await requireNote(noteId);
       if (note.status !== 'recording') throw new Error('Note is not an unfinished recording');
@@ -235,11 +241,15 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
     },
     async resumeQueues() {
       await journal.flush();
+      // Only fetch a model when a note is actually waiting for transcription;
+      // a first visit with no notes must not start a large download.
+      const pending = (await store.listNotes()).some(n => n.status === 'recording' || n.status === 'transcribing');
+      if (pending) void model.ensureModel();
       // Snapshot durable retry candidates before draining, so a failure is retried
       // on the next resume, not immediately in a tight loop.
       const retryIds = (await store.listNotes()).filter(n => n.status === 'done').map(n => n.id);
       const retrySummaries = (async () => {
-        if (!await deps.isSignedIn() || !await deps.isOnline()) return;
+        if (!await deps.isOnline()) return;
         await Promise.all(retryIds.map(async id => {
           if (!await store.getSummary(id) || summaryFailures.has(id)) await summarize(id);
         }));
@@ -270,6 +280,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
         await store.updateNote(noteId, { status: 'summarizing' });
       });
       await summarize(noteId);
+      if (summaryFailures.has(noteId)) throw summaryFailures.get(noteId);
     },
   };
   return pipeline;

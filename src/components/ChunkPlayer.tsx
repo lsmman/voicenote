@@ -1,10 +1,10 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { Platform, Text, View } from 'react-native';
+import { Platform, Text, View, useWindowDimensions } from 'react-native';
 import { createAudioPlayer, type AudioPlayer, type AudioStatus } from 'expo-audio';
 import type { AudioChunk, Memo } from '../core/types';
 import { store, sync } from '../services';
 import { Button, Notice } from '../ui/primitives';
-import { styles, useTheme } from '../ui/theme';
+import { shadow, styles, useIsDark, useTheme } from '../ui/theme';
 import { chunkAtTime, chunkByIndex, chunkDuration, sourceIsReady, timelineDuration } from './playerMath';
 import { Timeline } from './Timeline';
 import { resolveLocalPath } from '../recorder/paths';
@@ -12,7 +12,7 @@ export interface ChunkPlayerHandle { seek(ms: number, play?: boolean): void; pau
 interface Props { chunks: AudioChunk[]; memos: Memo[]; onPosition: (ms: number) => void }
 type Target = NonNullable<ReturnType<typeof chunkAtTime>>;
 export const ChunkPlayer = forwardRef<ChunkPlayerHandle, Props>(function ChunkPlayer({ chunks, memos, onPosition }, ref) {
-  const c = useTheme(); const player = useRef<AudioPlayer | null>(null);
+  const c = useTheme(); const dark = useIsDark(); const { width } = useWindowDimensions(); const player = useRef<AudioPlayer | null>(null);
   const [position, setPosition] = useState(0); const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [rate, setRate] = useState(1);
   const [reported, setReported] = useState<Record<number, number>>({}); const durations = useRef<Record<number, number>>({});
@@ -118,15 +118,15 @@ export const ChunkPlayer = forwardRef<ChunkPlayerHandle, Props>(function ChunkPl
   return <View style={[styles.card, { backgroundColor: c.surface, borderColor: c.border }]}>
     <Timeline durationMs={duration} positionMs={position} memos={memos} onSeek={ms => seek(ms)} />
     <View style={styles.row}>
-      <Button title={loading ? '불러오는 중…' : playing ? '일시정지' : '재생'} primary disabled={!chunks.length || loading} onPress={() => {
+      <Button title={loading ? '불러오는 중…' : playing ? '일시정지' : '재생'} primary style={{ minWidth: 88 }} disabled={!chunks.length || loading} onPress={() => {
         if (playing) { desiredPlaying.current = false; player.current?.pause(); setPlaying(false); }
         else seek(position >= duration ? 0 : position, true);
       }} />
-      <Button title="−10초" disabled={!chunks.length} onPress={() => seek(Math.max(0, position - 10000))} />
-      <Button title="+10초" disabled={!chunks.length} onPress={() => seek(Math.min(duration, position + 10000))} />
-      {[0.5, 1, 1.5, 2].map(value => <Button key={value} title={`${value}×${rate === value ? ' ✓' : ''}`} onPress={() => { speed.current = value; setRate(value); try { player.current?.setPlaybackRate(value); } catch { setError('배속을 변경하지 못했어요.'); } }} />)}
+      <Button ghost compact title="−10초" disabled={!chunks.length} onPress={() => seek(Math.max(0, position - 10000))} />
+      <Button ghost compact title="+10초" disabled={!chunks.length} onPress={() => seek(Math.min(duration, position + 10000))} />
+      <View style={{ flexDirection: 'row', backgroundColor: c.subtle, borderRadius: 10, padding: 3, gap: 2, marginLeft: 'auto', ...(width < 420 ? { flexBasis: '100%' } : {}) }}>{[0.5, 1, 1.5, 2].map(value => <Button ghost compact style={{ flex: width < 420 ? 1 : undefined, borderRadius: 7, backgroundColor: rate === value ? c.surfaceRaised : 'transparent', ...(rate === value ? shadow(dark).sm : {}) }} key={value} title={`${value}×${rate === value ? ' ✓' : ''}`} onPress={() => { speed.current = value; setRate(value); try { player.current?.setPlaybackRate(value); } catch { setError('배속을 변경하지 못했어요.'); } }} />)}</View>
     </View>
-    {!chunks.length && <Text style={{ color: c.muted }}>저장된 오디오가 없어요.</Text>}
+    {!chunks.length && <Text style={[styles.small, { color: c.muted }]}>저장된 오디오가 없어요.</Text>}
     {!!error && <Notice text={error} error />}
   </View>;
 });

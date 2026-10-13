@@ -47,7 +47,8 @@
           "androidForegroundService": false,
           "androidPermissions": []
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": false

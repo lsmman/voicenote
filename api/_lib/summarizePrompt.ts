@@ -2,13 +2,15 @@ import { z } from 'zod';
 import type { SummarizeRequest, SummarizeResponse } from '../../src/sync/types';
 
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+// Windowed transcription can yield fractional ms; accept and round on input.
+const inputTime = z.number().nonnegative().max(Number.MAX_SAFE_INTEGER).transform(Math.round);
 export const requestSchema = z.object({
   noteId: z.string().min(1),
   title: z.string(),
   segments: z.array(z.object({
-    startMs: time, endMs: time, text: z.string(), speakerLabel: z.string().nullable(),
+    startMs: inputTime, endMs: inputTime, text: z.string(), speakerLabel: z.string().nullable(),
   }).refine(s => s.endMs >= s.startMs, { message: 'endMs must follow startMs' })),
-  memos: z.array(z.object({ atMs: time, text: z.string(), kind: z.enum(['memo', 'bookmark']) })),
+  memos: z.array(z.object({ atMs: inputTime, text: z.string(), kind: z.enum(['memo', 'bookmark']) })),
 });
 const itemSchema = z.object({ text: z.string(), atMs: time.nullable() });
 export const summarySchema = z.object({

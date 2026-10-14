@@ -59,7 +59,11 @@ async function writeSegments(noteId: string, segments: Segment[], replace: boole
 }
 
 export const store: LocalStore = {
-  async init() { await db(); },
+  async init() {
+    await db();
+    // Ask the browser not to evict recordings under storage pressure (best-effort storage is the default).
+    try { await navigator.storage?.persist?.(); } catch { /* unsupported or denied: keep best-effort storage */ }
+  },
   async createNote(note) { await (await db()).add('notes', note); },
   async updateNote(id, patch) { await update('notes', id, patch); },
   async getNote(id) { return (await (await db()).get('notes', id)) ?? null; },

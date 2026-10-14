@@ -3,6 +3,7 @@ import { AppState, ActivityIndicator, Platform, Text, View } from 'react-native'
 import { Stack } from 'expo-router';
 import * as Linking from 'expo-linking';
 import { pipeline, store } from '../services';
+import { supabase } from '../sync';
 import { handleAuthRedirect } from '../sync/auth';
 import { webLocks } from '../ui/recordingSession';
 import { recoverUnfinished, type RecoveryChoice } from '../ui/recovery';
@@ -68,7 +69,11 @@ export default function RootLayout() {
     const state = AppState.addEventListener('change', value => {
       if (value === 'active') void pipeline.resumeQueues().catch(() => setError('대기 작업을 재개하지 못했어요. 연결 상태를 확인해 주세요.'));
     });
-    return () => { links.remove(); state.remove(); };
+    // Mirror local notes after sign-in and periodically while signed in (edits, memos, summaries).
+    const resume = () => { void pipeline.resumeQueues().catch(() => undefined); };
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(event => { if (event === 'SIGNED_IN') resume(); });
+    const timer = setInterval(() => { void supabase.auth.getSession().then(({ data }) => { if (data.session) resume(); }).catch(() => undefined); }, 60_000);
+    return () => { links.remove(); state.remove(); subscription.unsubscribe(); clearInterval(timer); };
   }, []);
   return <View style={[styles.screen, { backgroundColor: c.background }]}>
     {recovery && <View style={styles.content}><Text style={[styles.heading, { color: c.text }]}>{recovery.title || '중단된 녹음'}</Text><Notice text="저장된 부분까지 복구할까요?" /><View style={styles.row}><Button title="복구" onPress={() => recovery.resolve('recover')} /><Button title="삭제" danger onPress={() => recovery.resolve('discard')} /><Button title="나중에" onPress={() => recovery.resolve('later')} /></View></View>}

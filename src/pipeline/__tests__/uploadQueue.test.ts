@@ -108,3 +108,40 @@ test('null local path skips upload without calling the service', async () => {
   const f = fakes(); await f.deps.store.createNote(note()); await f.deps.store.addChunk({ ...chunk(), localPath: null });
   await createUploadQueue(f.deps).resume(); expect(f.deps.sync.uploadChunk).not.toHaveBeenCalled();
 });
+
+test('mirrors the note before its uploaded chunk rows and re-pushes only on change', async () => {
+  const f = fakes();
+  await f.deps.store.createNote(note()); await f.deps.store.addChunk(chunk());
+  const order: string[] = [];
+  jest.mocked(f.deps.sync.pushNote).mockImplementation(async () => { order.push('note'); });
+  jest.mocked(f.deps.sync.pushChunks).mockImplementation(async chunks => { order.push(`chunks:${chunks.map(c => c.seq)}`); });
+  const queue = createUploadQueue(f.deps);
+  await queue.resume();
+  expect(order).toEqual(['note', 'chunks:0']);
+  await queue.resume();
+  expect(order).toHaveLength(2);
+  await f.deps.store.updateNote('note', { title: 'renamed' });
+  await queue.resume();
+  expect(order).toEqual(['note', 'chunks:0', 'note']);
+});
+
+test('does not push chunk rows while the note push is failing, and retries it', async () => {
+  const f = fakes();
+  await f.deps.store.createNote(note()); await f.deps.store.addChunk(chunk());
+  jest.mocked(f.deps.sync.pushNote).mockRejectedValueOnce(new Error('offline'));
+  const queue = createUploadQueue(f.deps);
+  await queue.resume();
+  expect(f.deps.sync.uploadChunk).toHaveBeenCalledTimes(1);
+  expect(f.deps.sync.pushChunks).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(2000);
+  expect(f.deps.sync.pushNote).toHaveBeenCalledTimes(2);
+  expect(f.deps.sync.pushChunks).toHaveBeenCalledTimes(1);
+});
+
+test('signed-out sessions push nothing', async () => {
+  const f = fakes();
+  await f.deps.store.createNote(note());
+  jest.mocked(f.deps.isSignedIn).mockResolvedValue(false);
+  await createUploadQueue(f.deps).resume();
+  expect(f.deps.sync.pushNote).not.toHaveBeenCalled();
+});

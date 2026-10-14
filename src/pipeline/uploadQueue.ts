@@ -20,6 +20,8 @@ export function createUploadQueue(deps: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const skipped = new Set<string>();
   const retries = new Map<string, { at: number; delay: number }>();
+  // Fingerprints of what this session already mirrored; a restart re-pushes once (upserts are idempotent).
+  const pushed = new Map<string, string>();
 
   function schedule() {
     if (timer) clearTimeout(timer);
@@ -37,6 +39,12 @@ export function createUploadQueue(deps: {
       requested = false;
       const notes = (await deps.store.listNotes()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       for (const note of notes) {
+        const noteSynced = await mirror(`note:${note.id}`, async () => {
+          const [segments, memos, summary] = await Promise.all([
+            deps.store.listSegments(note.id), deps.store.listMemos(note.id), deps.store.getSummary(note.id),
+          ]);
+          return { fingerprint: JSON.stringify([note, segments, memos, summary]), push: () => deps.sync.pushNote(note, segments, memos, summary) };
+        });
         for (const chunk of (await deps.store.listChunks(note.id)).sort((a, b) => a.seq - b.seq)) {
           const key = `${chunk.noteId}:${chunk.seq}`;
           if (chunk.remotePath !== null || skipped.has(key)) { retries.delete(key); continue; }
@@ -54,8 +62,31 @@ export function createUploadQueue(deps: {
             else retry(key);
           }
         }
+        // Chunk rows reference the note row, so they follow a successful note push.
+        if (noteSynced) await mirror(`chunks:${note.id}`, async () => {
+          const uploaded = (await deps.store.listChunks(note.id)).filter(chunk => chunk.remotePath !== null);
+          return { fingerprint: uploaded.length ? JSON.stringify(uploaded.map(c => [c.seq, c.remotePath, c.transcribedAt])) : '', push: () => deps.sync.pushChunks(uploaded) };
+        });
       }
     } while (requested);
+  }
+  // Push a record when its fingerprint changed since the last confirmed push; true when in sync.
+  async function mirror(key: string, read: () => Promise<{ fingerprint: string; push: () => Promise<void> }>): Promise<boolean> {
+    if (skipped.has(key)) return false;
+    if ((retries.get(key)?.at ?? 0) > deps.now()) return false;
+    try {
+      if (!await deps.isOnline() || !await deps.isSignedIn()) return false;
+      const { fingerprint, push } = await read();
+      if (!fingerprint || pushed.get(key) === fingerprint) return true;
+      await withTimeout(push(), 60_000);
+      pushed.set(key, fingerprint);
+      retries.delete(key);
+      return true;
+    } catch (error) {
+      if (permanent(error)) { skipped.add(key); retries.delete(key); }
+      else retry(key);
+      return false;
+    }
   }
   function resume(force: boolean | { force?: boolean } = false): Promise<void> {
     if (typeof force === 'boolean' ? force : force.force) retries.clear();

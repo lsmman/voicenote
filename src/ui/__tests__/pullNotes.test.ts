@@ -1,6 +1,6 @@
 jest.mock('../../services', () => ({
-  store: { getNote: jest.fn(), createNote: jest.fn(), listSegments: jest.fn(), listMemos: jest.fn(), getSummary: jest.fn(), putSegments: jest.fn(), addMemo: jest.fn(), putSummary: jest.fn() },
-  sync: { pullNotes: jest.fn(), pullNoteDetail: jest.fn() },
+  store: { getNote: jest.fn(), createNote: jest.fn(), addChunk: jest.fn(), listSegments: jest.fn(), listMemos: jest.fn(), getSummary: jest.fn(), putSegments: jest.fn(), addMemo: jest.fn(), putSummary: jest.fn() },
+  sync: { pullNotes: jest.fn(), pullNoteDetail: jest.fn(), pullChunks: jest.fn() },
 }));
 import { store, sync } from '../../services';
 import { pullMissingNotes, pullMissingDetail } from '../pullNotes';
@@ -9,7 +9,10 @@ beforeEach(() => jest.resetAllMocks());
 test('pull creates missing notes without overwriting local titles', async () => {
   mocks.sync.pullNotes.mockResolvedValue([{ id: 'existing', title: 'remote' }, { id: 'new', title: 'new' }] as never);
   mocks.store.getNote.mockImplementation(async id => id === 'existing' ? { id, title: 'local edit' } as never : null);
+  mocks.sync.pullChunks.mockResolvedValue([{ noteId: 'new', seq: 0, remotePath: 'u/new/0.webm' }] as never);
   await pullMissingNotes();
+  expect(mocks.sync.pullChunks).toHaveBeenCalledWith('new');
+  expect(mocks.store.addChunk).toHaveBeenCalledWith({ noteId: 'new', seq: 0, remotePath: 'u/new/0.webm' });
   expect(mocks.store.createNote).toHaveBeenCalledTimes(1);
   expect(mocks.store.createNote).toHaveBeenCalledWith({ id: 'new', title: 'new' });
 });

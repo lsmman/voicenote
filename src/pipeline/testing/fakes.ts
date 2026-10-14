@@ -59,7 +59,7 @@ export function fakes() {
       load: jest.fn(async () => {}), transcribeChunk: jest.fn(async c => [{ startMs: 0, endMs: c.durationMs || 900, text: `chunk ${c.seq}` }]),
     },
     sync: {
-      uploadChunk: jest.fn(async c => `remote/${c.noteId}/${c.seq}`), pushNote: async () => {}, pullNotes: async () => [],
+      uploadChunk: jest.fn(async c => `remote/${c.noteId}/${c.seq}`), pushNote: jest.fn(async () => {}), pushChunks: jest.fn(async () => {}), pullNotes: async () => [], pullChunks: async () => [],
       pullNoteDetail: async () => ({ segments: [], memos: [], summary: null }), chunkUrl: async p => p,
       summarize: jest.fn(async () => ({ summary: [{ text: 'summary', atMs: 0 }], keywords: [], todos: [] })),
     },

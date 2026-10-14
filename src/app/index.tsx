@@ -50,6 +50,8 @@ export default function NotesScreen() {
     catch { task.setError('동기화하지 못했어요. 기기에 저장된 노트는 계속 사용할 수 있어요.'); await load(); }
     finally { setRefreshing(false); }
   };
+  // A fresh browser/device shows the account's notes as soon as it is signed in.
+  useEffect(() => { if (session) void pullMissingNotes().then(load).catch(() => undefined); }, [session?.user.id]);
   const importFile = () => task.run(async () => {
     const result = await DocumentPicker.getDocumentAsync({ type: 'audio/*', copyToCacheDirectory: true, multiple: false });
     if (result.canceled) return;

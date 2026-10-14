@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Platform } from 'react-native';
 import type { SyncService } from './types';
 import { resolveLocalPath } from '../recorder/paths';
-import { memoFromRow, memoToRow, noteFromRow, noteToRow, segmentFromRow, segmentToRow, summaryFromRow, summaryToRow } from './mapping';
+import { chunkFromRow, chunkToRow, memoFromRow, memoToRow, noteFromRow, noteToRow, segmentFromRow, segmentToRow, summaryFromRow, summaryToRow } from './mapping';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -85,6 +85,20 @@ export const sync: SyncService = {
       p_memos: memos.map(memoToRow), p_summary: summary ? summaryToRow(summary) : null,
     });
     if (error) throw error;
+  },
+  async pushChunks(chunks) {
+    const { user } = await requireSession();
+    if (chunks.some(chunk => !chunk.remotePath)) throw new Error('업로드되지 않은 청크입니다.');
+    // Device-local paths are meaningless elsewhere; only the remote path is shared.
+    const rows = chunks.map(chunk => ({ ...chunkToRow({ ...chunk, localPath: null }), user_id: user.id }));
+    const { error } = await supabase.from('audio_chunks').upsert(rows);
+    if (error) throw error;
+  },
+  async pullChunks(noteId) {
+    await requireSession();
+    const { data, error } = await supabase.from('audio_chunks').select('*').eq('note_id', noteId).order('seq');
+    if (error) throw error;
+    return data.map(chunkFromRow);
   },
   async pullNotes() {
     await requireSession();

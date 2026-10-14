@@ -3,7 +3,13 @@ import { store, sync } from '../services';
 // metadata we only fill missing records, never overwrite local edits.
 export async function pullMissingNotes(): Promise<void> {
   const remote = await sync.pullNotes();
-  for (const note of remote) if (!await store.getNote(note.id)) await store.createNote(note);
+  for (const note of remote) {
+    if (await store.getNote(note.id)) continue;
+    // Chunks first: a note without its chunk rows would look like it still needs transcription.
+    const chunks = await sync.pullChunks(note.id);
+    await store.createNote(note);
+    for (const chunk of chunks) await store.addChunk(chunk);
+  }
 }
 export async function pullMissingDetail(noteId: string): Promise<void> {
   const remote = await sync.pullNoteDetail(noteId);

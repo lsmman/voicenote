@@ -165,3 +165,10 @@ test('a full second of real overlap produces negative segment times', async () =
   expect(segments[0]).toEqual({ text: '안녕하세요', startMs: -880, endMs: 230 });
   expect(new DataView(mockTranscribeData.mock.calls[0][0] as ArrayBuffer).getInt16(0, true)).toBe(-16384);
 });
+
+test.each(['ko', 'en', 'zh'] as const)('passes %s to whisper.cpp', async language => {
+  mockFiles.set(path, 60_000_000);
+  await engine.load('base-q5_1');
+  await engine.transcribeChunk(chunk, { language });
+  expect(mockTranscribeData).toHaveBeenCalledWith(expect.any(ArrayBuffer), expect.objectContaining({ language }));
+});

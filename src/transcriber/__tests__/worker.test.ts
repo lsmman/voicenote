@@ -57,7 +57,7 @@ test('uses WASM without GPU, reuses loaded models and shifts timestamps', async 
   expect(mockPipeline).toHaveBeenCalledWith('automatic-speech-recognition', 'onnx-community/whisper-base', {
     device: 'wasm', dtype: { encoder_model: 'q8', decoder_model_merged: 'q8' }, progress_callback: expect.any(Function),
   });
-  const response = await send({ kind: 'transcribe', audio: new Float32Array(48_000), overlapMs: 1000 });
+  const response = await send({ kind: 'transcribe', language: 'ko', audio: new Float32Array(48_000), overlapMs: 1000 });
   expect(response).toMatchObject({ kind: 'result', segments: [{ text: '안녕하세요', startMs: -500, endMs: 1000 }] });
   expect(mockRecognize).toHaveBeenCalledWith(expect.any(Float32Array), {
     language: 'korean', task: 'transcribe', return_timestamps: true,
@@ -86,7 +86,7 @@ test('switching releases the old model; deletion removes only the requested repo
 test('load failure is reported and the worker can retry', async () => {
   mockPipeline.mockRejectedValueOnce(new Error('Download unavailable'));
   expect(await send({ kind: 'load', modelId: 'base-q5_1' })).toMatchObject({ kind: 'error', message: 'Download unavailable' });
-  expect(await send({ kind: 'transcribe', audio: new Float32Array(1), overlapMs: 0 })).toMatchObject({
+  expect(await send({ kind: 'transcribe', language: 'ko', audio: new Float32Array(1), overlapMs: 0 })).toMatchObject({
     kind: 'error', message: 'Load a transcription model first',
   });
   expect((await send({ kind: 'load', modelId: 'base-q5_1' })).kind).toBe('result');
@@ -105,7 +105,7 @@ test('GPU initialization failure retries q8 WASM and remembers the loaded fallba
 test('inference error disposes the recognizer and next load rebuilds', async () => {
   await send({ kind: 'load', modelId: 'base-q5_1' });
   mockRecognize.mockRejectedValueOnce(new Error('Inference failed'));
-  expect(await send({ kind: 'transcribe', audio: new Float32Array(1), overlapMs: 0 })).toMatchObject({ kind: 'error' });
+  expect(await send({ kind: 'transcribe', language: 'ko', audio: new Float32Array(1), overlapMs: 0 })).toMatchObject({ kind: 'error' });
   expect(mockDispose).toHaveBeenCalledTimes(1);
   await send({ kind: 'load', modelId: 'base-q5_1' });
   expect(mockPipeline).toHaveBeenCalledTimes(2);
@@ -124,9 +124,15 @@ test('device loss disposes and rebuilds with WASM', async () => {
 test.each([30.5, 30.501, 70])('chunking threshold and absolute timestamps for %ss', async (seconds) => {
   await send({ kind: 'load', modelId: 'base-q5_1' });
   mockRecognize.mockResolvedValueOnce({ text: 'later', chunks: [{ text: 'later', timestamp: [42, 45] }] });
-  const response = await send({ kind: 'transcribe', audio: new Float32Array(Math.round(seconds * 16000)), overlapMs: 0 });
+  const response = await send({ kind: 'transcribe', language: 'ko', audio: new Float32Array(Math.round(seconds * 16000)), overlapMs: 0 });
   const options = (mockRecognize.mock.calls.at(-1) as unknown as [unknown, Record<string, unknown>])[1];
   if (seconds > 30.5) expect(options).toMatchObject({ chunk_length_s: 30, stride_length_s: 5 });
   else expect(options).not.toHaveProperty('chunk_length_s');
   expect(response).toMatchObject({ segments: [{ startMs: 42000, endMs: 45000 }] });
+});
+
+test.each([['ko', 'korean'], ['en', 'english'], ['zh', 'chinese']] as const)('maps %s to Whisper language %s', async (language, name) => {
+  await send({ kind: 'load', modelId: 'base-q5_1' });
+  await send({ kind: 'transcribe', language, audio: new Float32Array(16000), overlapMs: 0 });
+  expect(mockRecognize).toHaveBeenCalledWith(expect.any(Float32Array), expect.objectContaining({ language: name }));
 });

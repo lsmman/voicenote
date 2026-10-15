@@ -7,7 +7,7 @@ export interface SummarizeRequest {
   memos: Pick<Memo, 'atMs' | 'text' | 'kind'>[];
 }
 
-export type SummarizeResponse = Omit<Summary, 'noteId' | 'createdAt'>;
+export type SummarizeResponse = Omit<Summary, 'noteId' | 'createdAt'> & { title: string };
 
 export interface SyncService {
   // Upload one chunk's audio to Supabase Storage; resolves with remote path

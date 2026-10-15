@@ -1,0 +1,7 @@
+{
+  "name": "Voicenote",
+  "description": "Read-only access to your own voice notes, transcripts, summaries, keywords, todos, and memos. Recording audio is not exposed.",
+  "endpoint": "https://voicenote-ten-alpha.vercel.app/api/mcp",
+  "transport": "streamable-http",
+  "auth": "bearer"
+}

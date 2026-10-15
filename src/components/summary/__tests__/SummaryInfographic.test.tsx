@@ -1,9 +1,12 @@
+import { setLanguage } from '../../../i18n/language';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { StyleSheet } from 'react-native';
 import { SummaryInfographic } from '../SummaryInfographic';
 import { SpeechFlow } from '../SpeechFlow';
 import type { Summary } from '../../../core/types';
+jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
+beforeEach(async () => { await setLanguage('ko'); });
 
 let tree: ReactTestRenderer;
 afterEach(async () => { await act(async () => tree?.unmount()); });
@@ -32,4 +35,14 @@ test('markers, columns and timestamp chips seek; hover/long press and table expo
   expect(tree.root.findAll(node => typeof node.type === 'string').some(node => node.props.accessibilityLabel === '시간대별 글자 수 표')).toBe(false);
   const markers = tree.root.findByType(SpeechFlow).findAll(node => typeof node.props.onPress === 'function' && node.props.accessibilityRole === 'button').filter(node => /^(핵심 포인트|할 일|메모) ·|^핵심 포인트 2/.test(String(node.props.accessibilityLabel)));
   expect(new Set(markers.map(node => StyleSheet.flatten(node.props.style).top)).size).toBe(3);
+});
+
+test('mounted summary statistics and bookmark labels follow language changes', async () => {
+  await act(async () => { tree = create(<SummaryInfographic summary={summary} durationMs={60000} segments={[]} memos={[{ id: 'b', noteId: 'n', kind: 'bookmark', text: '', atMs: 1000 }]} onSeek={jest.fn()} />); });
+  await act(async () => { await setLanguage('en'); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Duration');
+  expect(tree.root.findByType(SpeechFlow).props.markers.some((marker: { text: string }) => marker.text === 'Bookmark')).toBe(true);
+  await act(async () => { await setLanguage('zh'); });
+  expect(JSON.stringify(tree.toJSON())).toContain('录音时长');
+  expect(tree.root.findByType(SpeechFlow).props.markers.some((marker: { text: string }) => marker.text === '书签')).toBe(true);
 });

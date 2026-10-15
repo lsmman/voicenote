@@ -98,17 +98,18 @@ test('readiness requires a repo cache entry and clears evicted markers', async (
   expect(marker.size).toBe(0);
 });
 
-test('long audio windows are sent sequentially with owned transfers and absolute offsets', async () => {
+test.each(['ko', 'en', 'zh'] as const)('long audio windows carry %s with owned transfers and absolute offsets', async language => {
   await load();
   const audio = new Float32Array(16000 * 74);
   mockDecode.mockResolvedValue({ sampleRate: 16000, numberOfChannels: 1, getChannelData: () => audio });
-  const promise = engine.transcribeChunk(chunk, { language: 'ko' });
+  const promise = engine.transcribeChunk(chunk, { language });
   await flush();
   expect(target().sent).toHaveLength(2); // load + first inference, not all windows
   const lengths: number[] = [];
   for (let i = 1; i <= 3; i++) {
     const sent = target().sent[i];
     if (sent.request.kind !== 'transcribe') throw new Error('Expected audio');
+    expect(sent.request.language).toBe(language);
     lengths.push(sent.request.audio.length);
     expect(sent.transfer).toEqual([sent.request.audio.buffer]);
     expect(sent.request.audio.buffer).not.toBe(audio.buffer);

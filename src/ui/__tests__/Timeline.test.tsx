@@ -1,6 +1,9 @@
+import { setLanguage } from '../../i18n/language';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Timeline } from '../../components/Timeline';
+jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
+beforeEach(async () => { await setLanguage('ko'); });
 let tree: ReactTestRenderer;
 afterEach(async () => { await act(async () => tree?.unmount()); });
 test('drag updates its displayed position, seeks once on release, and cancellation does not seek', async () => {

@@ -1,3 +1,4 @@
+import { getLanguage } from '../i18n/language';
 import type { LocalStore } from '../store/types';
 import type { TranscriberEngine, TranscriptionQueueEvents } from '../transcriber/types';
 import { mergeSegments } from './mergeSegments';
@@ -52,7 +53,7 @@ export function createTranscriptionQueue(deps: {
     try {
       incoming = await withTimeout(deps.engine.transcribeChunk(chunk, {
         prevChunk: index > 0 ? chunks[index - 1] : undefined,
-        prompt: existing[existing.length - 1]?.text.slice(-200), language: 'ko',
+        prompt: existing[existing.length - 1]?.text.slice(-200), language: getLanguage(),
       }), 120_000);
     } catch (error) {
       const count = (failures.get(key) ?? 0) + 1;

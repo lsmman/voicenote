@@ -1,5 +1,8 @@
+import { setLanguage } from '../../i18n/language';
 import { alreadyActive, recordingLockHeld, RECORDING_LOCK, startOrAttachRecording, webLocks } from '../recordingSession';
 import type { LiveSessionState, Pipeline } from '../../pipeline/types';
+jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
+beforeEach(async () => { await setLanguage('ko'); });
 const live = { noteId: 'n', state: 'recording' } as LiveSessionState;
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 function fixture() {

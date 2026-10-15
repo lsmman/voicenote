@@ -108,7 +108,7 @@ export const engine: TranscriberEngine = {
     try { localStorage.removeItem(readyKey(id)); } catch { /* Storage may be disabled. */ }
     await request({ kind: 'delete', modelId: id, repo: getModel(id).web.repo });
   }),
-  transcribeChunk: (chunk, { prevChunk }) => serial(async () => {
+  transcribeChunk: (chunk, { prevChunk, language }) => serial(async () => {
     const context = new AudioContext();
     try {
       // Retain only the previous second before decoding a potentially hours-long import.
@@ -118,7 +118,7 @@ export const engine: TranscriberEngine = {
       const current = await decode(chunk, context);
       const segments: SegmentResult[] = [];
       for (const { audio, startMs } of webAudioWindows(current, previous)) {
-        const result = await request({ kind: 'transcribe', audio, overlapMs: 0 });
+        const result = await request({ kind: 'transcribe', audio, overlapMs: 0, language });
         segments.push(...result.map((segment) => ({
           ...segment, startMs: segment.startMs + startMs, endMs: segment.endMs + startMs,
         })));

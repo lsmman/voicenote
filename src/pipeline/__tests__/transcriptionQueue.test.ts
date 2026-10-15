@@ -1,3 +1,5 @@
+jest.mock('../../i18n/language', () => ({ getLanguage: jest.fn(() => 'ko') }));
+import { getLanguage } from '../../i18n/language';
 /// <reference types="jest" />
 import { createTranscriptionQueue } from '../transcriptionQueue';
 import { chunk, fakes, note } from '../testing/fakes';
@@ -32,7 +34,7 @@ test('inference failure preserves pending chunk for later retry', async () => {
   await queue.resume(); expect(f.chunks.get('n/0')?.transcribedAt).not.toBeNull();
 });
 
-beforeEach(() => { jest.useFakeTimers(); });
+beforeEach(() => { jest.mocked(getLanguage).mockReturnValue('ko'); jest.useFakeTimers(); });
 afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
 
 function queueFor(f: ReturnType<typeof fakes>) {
@@ -104,4 +106,15 @@ test('retry after partial segment persistence uses stable chunk segment IDs', as
   jest.spyOn(f.deps.store, 'putSegments').mockImplementationOnce(async (id, segments) => { await write(id, segments.slice(0, 1)); throw new Error('partial write'); });
   const q = queueFor(f); await q.resume(); await q.resume();
   expect((await f.deps.store.listSegments('note')).map(s => s.id)).toEqual(['note:0:0', 'note:0:1']);
+});
+
+test('reads current language for each chunk at transcription time', async () => {
+  const f = fakes(); await f.deps.store.createNote(note());
+  const q = queueFor(f);
+  for (const [seq, language] of (['ko', 'en', 'zh'] as const).entries()) {
+    jest.mocked(getLanguage).mockReturnValue(language);
+    await f.deps.store.addChunk(chunk('note', seq));
+    await q.resume();
+    expect(f.deps.engine.transcribeChunk).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ language }));
+  }
 });

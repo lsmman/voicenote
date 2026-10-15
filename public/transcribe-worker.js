@@ -96,7 +96,7 @@ async function execute(request) {
   try {
     const duration = request.audio.length / SAMPLE_RATE;
     const result = await current(request.audio, {
-      language: 'korean', task: 'transcribe', return_timestamps: true,
+      language: { ko: 'korean', en: 'english', zh: 'chinese' }[request.language], task: 'transcribe', return_timestamps: true,
       ...(duration > 30.5 ? { chunk_length_s: 30, stride_length_s: 5 } : {}),
     });
     if (recognizer !== current) throw new Error('Transcription GPU device lost; load the model again');

@@ -61,7 +61,7 @@ export function fakes() {
     sync: {
       uploadChunk: jest.fn(async c => `remote/${c.noteId}/${c.seq}`), pushNote: jest.fn(async () => {}), pushChunks: jest.fn(async () => {}), pullNotes: async () => [], pullChunks: async () => [],
       pullNoteDetail: async () => ({ segments: [], memos: [], summary: null }), chunkUrl: async p => p,
-      summarize: jest.fn(async () => ({ summary: [{ text: 'summary', atMs: 0 }], keywords: [], todos: [] })),
+      summarize: jest.fn(async () => ({ title: 'Topic', summary: [{ text: 'summary', atMs: 0 }], keywords: [], todos: [] })),
     },
   };
   return { deps, notes, chunks, summaries, blobs, history, events: () => events };

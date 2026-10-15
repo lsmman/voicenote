@@ -1,6 +1,9 @@
+import { setLanguage } from '../../i18n/language';
 import { recoverUnfinished } from '../recovery';
 import { RECORDING_LOCK } from '../recordingSession';
 import type { Note } from '../../core/types';
+jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
+beforeEach(async () => { await setLanguage('ko'); });
 const notes = ['a', 'b', 'c'].map(id => ({ id, title: id, status: 'recording' } as Note));
 function fixture() {
   return {

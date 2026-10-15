@@ -1,21 +1,24 @@
+import { t, useT } from '../i18n';
 import { useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, Animated, Text, View } from 'react-native';
 import { type, useTheme } from './theme';
 
 /** Presentation-only history; it never subscribes to or changes the recording pipeline. */
 export function LevelMeter({ level, paused }: { level: number; paused: boolean }) {
+  useT();
   const c = useTheme(); const history = useRef<number[]>(Array(48).fill(0));
   const [bars, setBars] = useState(history.current);
   useEffect(() => {
     history.current = [...history.current.slice(1), Math.min(1, Math.max(0, level))];
     setBars(history.current);
   }, [level]);
-  return <View accessibilityLabel="마이크 음량" accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: Math.round(level * 100) }} style={{ height: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, maxWidth: 360, alignSelf: 'center', width: '100%' }}>
+  return <View accessibilityLabel={t('micLevel')} accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: Math.round(level * 100) }} style={{ height: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, maxWidth: 360, alignSelf: 'center', width: '100%' }}>
     {bars.map((value, index) => <View key={index} style={{ width: 3, borderRadius: 1.5, height: Math.max(3, Math.sqrt(value) * 40), backgroundColor: paused ? c.borderStrong : value > 0.9 ? c.recording : c.text, opacity: 0.25 + index / 47 * 0.75 }} />)}
   </View>;
 }
 
 export function RecordingStatus({ text, recording, paused }: { text: string; recording: boolean; paused: boolean }) {
+  useT();
   const c = useTheme(); const opacity = useRef(new Animated.Value(1)).current;
   useEffect(() => {
     let alive = true; let animation: Animated.CompositeAnimation | undefined;

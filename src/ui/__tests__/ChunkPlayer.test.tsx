@@ -1,3 +1,4 @@
+import { setLanguage } from '../../i18n/language';
 import React, { createRef } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import type { AudioStatus } from 'expo-audio';
@@ -28,6 +29,8 @@ jest.mock('expo-audio', () => ({ createAudioPlayer: () => mockMakePlayer() }));
 jest.mock('../../services', () => ({ store: { getAudioBlob: jest.fn() }, sync: { chunkUrl: jest.fn(async (path: string) => `https://audio/${path}`) } }));
 import { ChunkPlayer, type ChunkPlayerHandle } from '../../components/ChunkPlayer';
 import { Timeline } from '../../components/Timeline';
+jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
+beforeEach(async () => { await setLanguage('ko'); });
 const chunks: AudioChunk[] = [0, 1].map(seq => ({ noteId: 'n', seq, startMs: seq * 30000, durationMs: 30000, localPath: `file:///chunk-${seq}.m4a`, remotePath: null, mimeType: 'audio/mp4', uploadedAt: null, transcribedAt: null }));
 let tree: ReactTestRenderer;
 beforeEach(() => { mockPlayers.length = 0; mockAutoLoad = true; });

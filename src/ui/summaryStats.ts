@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import type { Memo, Segment, Summary } from '../core/types';
 import { formatTime, formatTimestamp } from './format';
 
@@ -43,10 +44,10 @@ export function keywordCounts(keywords: string[], segments: Segment[]) {
 export function summaryStatValues(durationMs: number, segments: Segment[], summary: Summary, memos: Memo[]) {
   const ms = duration(durationMs);
   return [
-    { label: '녹음 길이', value: ms >= 3_600_000 ? formatTime(ms) : formatTimestamp(ms) },
-    { label: '문장 수', value: String(segments.length) },
-    { label: '할 일', value: String(summary.todos.length) },
-    { label: '메모', value: String(memos.length) },
+    { label: t('recordingLength'), value: ms >= 3_600_000 ? formatTime(ms) : formatTimestamp(ms) },
+    { label: t('sentenceCount'), value: String(segments.length) },
+    { label: t('todos'), value: String(summary.todos.length) },
+    { label: t('memo'), value: String(memos.length) },
   ];
 }
 export interface SummaryMarker { id: string; kind: 'point' | 'todo' | 'memo'; text: string; atMs: number; fraction: number; number?: number }
@@ -60,6 +61,6 @@ export function summaryMarkers(summary: Summary, memos: Memo[], durationMs: numb
   };
   summary.summary.forEach((item, i) => add(`point-${i}`, 'point', item.text, item.atMs, i + 1));
   summary.todos.forEach((item, i) => add(`todo-${i}`, 'todo', item.text, item.atMs));
-  memos.forEach((memo, i) => add(`memo-${i}`, 'memo', memo.text || (memo.kind === 'bookmark' ? '북마크' : '메모'), memo.atMs));
+  memos.forEach((memo, i) => add(`memo-${i}`, 'memo', memo.text || (memo.kind === 'bookmark' ? t('bookmark') : t('memo')), memo.atMs));
   return markers;
 }

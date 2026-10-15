@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import type { Pipeline } from '../pipeline/types';
 
 export const RECORDING_LOCK = 'voicenote-recording';
@@ -50,7 +51,7 @@ export function startOrAttachRecording(pipeline: Pipeline, locks?: LockManager):
   };
   const work = locks
     ? locks.request(RECORDING_LOCK, { mode: 'exclusive', ifAvailable: true }, async lock => {
-      if (!lock) throw new Error('다른 탭에서 녹음 중이에요. 해당 탭으로 돌아가 주세요.');
+      if (!lock) throw new Error(t('recordingOtherTab'));
       await run();
     })
     : run();

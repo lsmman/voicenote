@@ -6,6 +6,6 @@
     "api/**/*.ts": { "maxDuration": 300 }
   },
   "rewrites": [
-    { "source": "/((?!api(?:/|$)).*)", "destination": "/index.html" }
+    { "source": "/((?!(?:api|docs|\\.well-known)(?:/|$)|llms(?:-full)?\\.txt(?:/|$)).*)", "destination": "/index.html" }
   ]
 }

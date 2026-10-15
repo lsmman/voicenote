@@ -26,7 +26,7 @@ export interface TranscriberEngine {
   // overlap). Duplicates are removed later by mergeSegments().
   transcribeChunk(
     chunk: AudioChunk,
-    opts: { prevChunk?: AudioChunk; prompt?: string; language: 'ko' },
+    opts: { prevChunk?: AudioChunk; prompt?: string; language: 'ko' | 'en' | 'zh' },
   ): Promise<{ startMs: number; endMs: number; text: string }[]>; // times relative to chunk start
 }
 

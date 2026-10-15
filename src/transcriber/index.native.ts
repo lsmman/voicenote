@@ -76,12 +76,12 @@ export const engine: TranscriberEngine = {
     context = await initWhisper({ filePath: modelPath(id) });
     loadedId = id;
   }),
-  transcribeChunk: (rawChunk, { prompt, prevChunk: rawPrev }) => serial(async () => {
+  transcribeChunk: (rawChunk, { prompt, prevChunk: rawPrev, language }) => serial(async () => {
     const chunk = rawChunk.localPath ? { ...rawChunk, localPath: resolveLocalPath(rawChunk.localPath) } : rawChunk;
     const prevChunk = rawPrev?.localPath ? { ...rawPrev, localPath: resolveLocalPath(rawPrev.localPath) } : rawPrev;
     if (!context) throw new Error('Load a transcription model first');
     if (!chunk.localPath) throw new Error('Audio chunk has no local path');
-    const options = { language: 'ko', prompt, maxLen: 0, tokenTimestamps: true };
+    const options = { language, prompt, maxLen: 0, tokenTimestamps: true };
     const mapResult = (result: Awaited<ReturnType<WhisperContext['transcribeData']>['promise']>, startMs: number) => {
       if (result.isAborted) throw new Error('Transcription was aborted');
       return result.segments.map(({ text, t0, t1 }) => ({

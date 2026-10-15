@@ -1,5 +1,8 @@
+import { setLanguage } from '../../i18n/language';
 import { buildMarkdownExport, buildTextExport, formatTime, formatTimestamp, statusLabel } from '../format';
 import type { ExportNote } from '../format';
+jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
+beforeEach(async () => { await setLanguage('ko'); });
 const data: ExportNote = {
   note: { id: 'n', title: '회의 *노트*', userId: null, createdAt: '2026-10-13T00:00:00Z', durationMs: 10805000, status: 'done', modelName: null, gaps: [] },
   summary: { noteId: 'n', createdAt: '', summary: [{ text: '결론', atMs: 1000 }, { text: '근거 없음', atMs: null }], keywords: ['일정'], todos: [{ text: '자료 보내기', atMs: 2000 }] },

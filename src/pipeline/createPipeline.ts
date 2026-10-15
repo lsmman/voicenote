@@ -1,3 +1,4 @@
+import { createDefaultTitle, isDefaultTitle } from './defaultTitle';
 import { newId } from '../core/id';
 import type { AudioChunk, Memo, Note } from '../core/types';
 import type { LocalStore } from '../store/types';
@@ -71,7 +72,12 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
           segments, memos: await store.listMemos(noteId),
         }), 280_000);
         if (!currentVersion()) return;
-        await store.putSummary({ ...response, noteId, createdAt: new Date(deps.now()).toISOString() });
+        const { title, ...summary } = response;
+        await store.putSummary({ ...summary, noteId, createdAt: new Date(deps.now()).toISOString() });
+        const latest = await store.getNote(noteId);
+        if (currentVersion() && latest && isDefaultTitle(latest.title)) {
+          await store.updateNote(noteId, { title });
+        }
         summaryFailures.delete(noteId);
       } catch (error) {
         if (currentVersion()) summaryFailures.set(noteId, error);
@@ -138,10 +144,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
       if (live || starting || stopping) throw new Error('Recording already active');
       starting = true;
       void model.ensureModel();
-      const date = new Date(deps.now());
-      const pad = (value: number) => String(value).padStart(2, '0');
-      const defaultTitle = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())} 녹음`;
-      const note = makeNote(title ?? defaultTitle, 'recording');
+      const note = makeNote(title ?? createDefaultTitle(new Date(deps.now())), 'recording');
       try {
         await store.createNote(note);
         lastElapsedAt = deps.now(); lastLevelNotification = -Infinity;

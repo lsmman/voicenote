@@ -1,0 +1,16 @@
+# Voicenote
+
+> Voicenote is a voice note app with a read-only MCP integration for accessing your own notes, transcripts, summaries, keywords, todos, and timestamped memos.
+
+MCP endpoint: https://voicenote-ten-alpha.vercel.app/api/mcp. Transport: Streamable HTTP (stateless JSON), protocol 2025-06-18. Authentication requires a personal access token (`Authorization: Bearer vn_...`) created in Settings → AI integration. Tokens grant read access to all your notes, are shown once, and can be revoked. Recording audio is not exposed via MCP. Documentation is public.
+
+## Integration
+
+- [Complete integration guide](https://voicenote-ten-alpha.vercel.app/llms-full.txt): Tool arguments, token setup, client configuration, curl examples, and privacy.
+- [MCP discovery](https://voicenote-ten-alpha.vercel.app/.well-known/mcp.json): Endpoint, transport, and authentication metadata.
+
+## Human-readable guides
+
+- [English](https://voicenote-ten-alpha.vercel.app/docs/index.html): AI integration guide.
+- [한국어](https://voicenote-ten-alpha.vercel.app/docs/ko/index.html): 한국어 AI 연동 안내.
+- [中文](https://voicenote-ten-alpha.vercel.app/docs/zh/index.html): 中文 AI 集成指南.

@@ -1,5 +1,8 @@
+import { setLanguage } from '../../i18n/language';
 import type { Memo, Segment, Summary } from '../../core/types';
 import { keywordCounts, speechBuckets, summaryMarkers, summaryStatValues } from '../summaryStats';
+jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
+beforeEach(async () => { await setLanguage('ko'); });
 const segment = (text: string, startMs = 0, endMs = 120000): Segment => ({ id: 's', noteId: 'n', text, startMs, endMs, speakerLabel: null, edited: false });
 const summary: Summary = { noteId: 'n', summary: [{ text: 'untimed', atMs: null }, { text: 'point', atMs: 30000 }], todos: [{ text: 'todo', atMs: 120000 }], keywords: [], createdAt: '' };
 const memos: Memo[] = [{ id: 'm', noteId: 'n', kind: 'memo', text: 'memo', atMs: -100 }, { id: 'b', noteId: 'n', kind: 'bookmark', text: '', atMs: 60000 }];

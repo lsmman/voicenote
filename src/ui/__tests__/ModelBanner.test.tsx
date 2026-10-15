@@ -1,3 +1,4 @@
+import { setLanguage } from '../../i18n/language';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import type { ModelState } from '../../pipeline/types';
@@ -10,6 +11,8 @@ jest.mock('../../services', () => ({ pipeline: {
 } }));
 import { ModelBanner } from '../ModelBanner';
 import { Button } from '../primitives';
+jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
+beforeEach(async () => { await setLanguage('ko'); });
 let tree: ReactTestRenderer;
 afterEach(async () => { await act(async () => tree?.unmount()); jest.clearAllMocks(); });
 test('shared model subscription renders progress, wifi consent, error retry, and hides ready', async () => {

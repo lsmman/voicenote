@@ -31,20 +31,20 @@ test('timestamps do not wrap at an hour', () => {
 });
 
 test('maps valid evidence and nullable times without losing precision', () => {
-  const output = { summary: [{ text: '**준비**', atMs: 1234 }], keywords: ['자료'], todos: [{ text: '확인', atMs: null }] };
+  const output = { title: '회의 주제', summary: [{ text: '**준비**', atMs: 1234 }], keywords: ['자료'], todos: [{ text: '확인', atMs: null }] };
   expect(mapResponse(output, request)).toEqual(output);
 });
 
 test.each([1000, 1500, 2000, 999999, -1, 1.5, '1234', undefined, {}, NaN, Infinity])('normalizes invalid or unknown evidence time %p to null', atMs => {
   const item = { text: '할 일', atMs };
-  expect(mapResponse({ summary: [item], keywords: [], todos: [item] }, request)).toEqual({
-    summary: [{ ...item, atMs: null }], keywords: [], todos: [{ ...item, atMs: null }],
+  expect(mapResponse({ title: '회의 주제', summary: [item], keywords: [], todos: [item] }, request)).toEqual({
+    title: '회의 주제', summary: [{ ...item, atMs: null }], keywords: [], todos: [{ ...item, atMs: null }],
   });
 });
 
 test('rejects more than ten keywords and malformed output', () => {
-  expect(() => mapResponse({ summary: [], keywords: Array(11).fill('키워드'), todos: [] }, request)).toThrow();
-  expect(() => mapResponse({ summary: [{ text: 123, atMs: null }], keywords: [], todos: [] }, request)).toThrow();
+  expect(() => mapResponse({ title: '회의 주제', summary: [], keywords: Array(11).fill('키워드'), todos: [] }, request)).toThrow();
+  expect(() => mapResponse({ title: '회의 주제', summary: [{ text: 123, atMs: null }], keywords: [], todos: [] }, request)).toThrow();
 });
 
 test('validates the request contract and impossible timing', () => {
@@ -56,8 +56,8 @@ test('validates the request contract and impossible timing', () => {
 test('handles an empty transcript without inventing evidence', () => {
   const empty = { ...request, segments: [], memos: [] };
   expect(buildPrompt(empty).content).toContain('(전사 없음)');
-  expect(mapResponse({ summary: [], keywords: [], todos: [] }, empty)).toEqual({ summary: [], keywords: [], todos: [] });
-  expect(mapResponse({ summary: [{ text: '주장', atMs: 0 }], keywords: [], todos: [] }, empty).summary[0].atMs).toBeNull();
+  expect(mapResponse({ title: '회의 주제', summary: [], keywords: [], todos: [] }, empty)).toEqual({ title: '회의 주제', summary: [], keywords: [], todos: [] });
+  expect(mapResponse({ title: '회의 주제', summary: [{ text: '주장', atMs: 0 }], keywords: [], todos: [] }, empty).summary[0].atMs).toBeNull();
 });
 
 test('strips CR and LF inside a segment without creating extra transcript lines', () => {
@@ -68,8 +68,8 @@ test('strips CR and LF inside a segment without creating extra transcript lines'
 
 test('strips markdown links and images in every returned text field, preserving plain labels', () => {
   const text = '**참고** [자료](https://example.com/a_(b)) ![그림](https://example.com/x.png)';
-  expect(mapResponse({ summary: [{ text, atMs: 1234 }], keywords: [text], todos: [{ text, atMs: null }] }, request)).toEqual({
-    summary: [{ text: '**참고** 자료 그림', atMs: 1234 }],
+  expect(mapResponse({ title: '회의 주제', summary: [{ text, atMs: 1234 }], keywords: [text], todos: [{ text, atMs: null }] }, request)).toEqual({
+    title: '회의 주제', summary: [{ text: '**참고** 자료 그림', atMs: 1234 }],
     keywords: ['**참고** 자료 그림'], todos: [{ text: '**참고** 자료 그림', atMs: null }],
   });
 });
@@ -81,4 +81,17 @@ test('fractional millisecond times from windowed transcription are accepted and 
   });
   expect(parsed.success).toBe(true);
   if (parsed.success) expect(parsed.data.segments[0]).toEqual({ startMs: 24333, endMs: 25501, text: '문장', speakerLabel: null });
+});
+
+test.each([undefined, '', 'x'.repeat(41)])('rejects invalid title %p', title => {
+  expect(() => mapResponse({ title, summary: [], keywords: [], todos: [] }, request)).toThrow();
+});
+
+test.each(['한국어', 'English', '中文'])('prompt follows transcript language for %s', text => {
+  const { system, content } = buildPrompt({ ...request, segments: [{ ...request.segments[0], text }] });
+  expect(content).toContain(text);
+  expect(system).toContain('전사문의 주된 언어');
+  expect(system).toContain('한국어 전사는 한국어로, 영어 전사는 영어로, 중국어 전사는 중국어로');
+  expect(system).toContain('40자 이하');
+  expect(mapResponse({ title: text, summary: [], keywords: [], todos: [] }, request).title).toBe(text);
 });

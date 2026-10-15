@@ -14,7 +14,7 @@ jest.mock('@anthropic-ai/sdk', () => ({ __esModule: true, default: jest.fn().moc
 jest.mock('@anthropic-ai/sdk/helpers/zod', () => ({ zodOutputFormat: () => ({ type: 'json_schema' }) }));
 
 const body = { noteId: 'n', title: '회의', segments: [{ startMs: 1234, endMs: 2000, text: '안녕', speakerLabel: null }], memos: [] };
-const output = { summary: [{ text: '인사', atMs: 1234 }], keywords: [], todos: [] };
+const output = { title: '회의 주제', summary: [{ text: '인사', atMs: 1234 }], keywords: [], todos: [] };
 async function call(overrides: Partial<VercelRequest> = {}) {
   const req = { method: 'POST', headers: { authorization: 'Bearer token' }, body, ...overrides } as VercelRequest;
   const res = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis(), setHeader: jest.fn(), end: jest.fn() };
@@ -215,4 +215,9 @@ test('invalid and oversized anonymous requests do not consume quota', async () =
   expect((await call({ headers, body: {} })).status).toHaveBeenCalledWith(400);
   expect((await call({ headers, body: 'x'.repeat(4194305) })).status).toHaveBeenCalledWith(413);
   expect((await call({ headers })).status).toHaveBeenCalledWith(200);
+});
+
+test.each([undefined, '', 'x'.repeat(41)])('rejects provider output with invalid title %p', title => {
+  mockFinalMessage.mockResolvedValue({ stop_reason: 'end_turn', parsed_output: { ...output, title } });
+  return call().then(res => expect(res.status).toHaveBeenCalledWith(502));
 });

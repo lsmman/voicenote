@@ -1,0 +1,120 @@
+# Voicenote AI integration
+
+> Read your own voice notes from an AI assistant using the read-only Voicenote MCP server.
+
+Voicenote supports long recordings, timestamped memos and bookmarks, on-device Whisper transcription, AI summaries with keywords and todos, Supabase account sync, M4A export, and uploaded-file transcription.
+
+## Connection
+
+Endpoint: https://voicenote-ten-alpha.vercel.app/api/mcp
+Transport: MCP Streamable HTTP, stateless JSON.
+Protocol version: 2025-06-18.
+Authentication: `Authorization: Bearer vn_...` on every request.
+The documentation is public and requires no authentication; MCP note access requires a personal access token.
+
+## Create a personal access token
+
+Open the app and go to Settings → AI integration → Create token.
+Korean: 설정 → AI 연동. Chinese: 设置 → AI 集成.
+Copy the token when it is displayed: it is shown only once. Store it securely and use it in your MCP client. Tokens can be revoked at any time in the app. Replace every `vn_...` placeholder below with your own token; never publish it.
+
+## Read-only tools
+
+### list_notes
+
+Arguments: `{query?: string, limit?: number}`
+
+List notes, optionally filtered by query. Limit defaults to 20; maximum 100.
+
+### get_note
+
+Arguments: `{id: string, include_transcript?: boolean}`
+
+Get title, date, duration, summary with timestamps, keywords, todos, memos, and transcript lines formatted as [mm:ss] text. include_transcript defaults to true.
+
+### search_transcripts
+
+Arguments: `{query: string, limit?: number}`
+
+Search transcript text. Results contain noteId, noteTitle, startMs, text. Limit defaults to 20; maximum 100.
+
+### get_summary
+
+Arguments: `{id: string}`
+
+Get a note’s summary.
+
+Use `list_notes` to obtain an actual note ID before calling `get_note` or `get_summary`. Optional parameters may be omitted. For `search_transcripts`, query is required. These tools do not edit or delete notes or create summaries.
+
+## Claude Desktop / Claude Code
+
+In Claude Desktop, use a client configuration that supports a remote Streamable HTTP server with the endpoint and Authorization header above. Availability of custom bearer headers depends on the Desktop version; if unavailable, use Claude Code. The command below registers the server in Claude Code, not in Claude Desktop:
+
+```sh
+claude mcp add --transport http voicenote https://voicenote-ten-alpha.vercel.app/api/mcp --header "Authorization: Bearer vn_..."
+```
+
+## Cursor
+
+Add this entry to your Cursor `mcp.json` (merge it with existing servers):
+
+```json
+{
+  "mcpServers": {
+    "voicenote": {
+      "url": "https://voicenote-ten-alpha.vercel.app/api/mcp",
+      "headers": {
+        "Authorization": "Bearer vn_..."
+      }
+    }
+  }
+}
+```
+
+## Generic HTTP client / curl
+
+Set `VOICENOTE_TOKEN` in your local shell to your personal token without sharing it. Initialize the client:
+
+```sh
+curl https://voicenote-ten-alpha.vercel.app/api/mcp \
+  -H "Authorization: Bearer $VOICENOTE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"voicenote-example","version":"1.0.0"}}}'
+```
+
+Send the initialized notification:
+
+```sh
+curl https://voicenote-ten-alpha.vercel.app/api/mcp \
+  -H "Authorization: Bearer $VOICENOTE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-06-18' \
+  --data '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+```
+
+Call a tool:
+
+```sh
+curl https://voicenote-ten-alpha.vercel.app/api/mcp \
+  -H "Authorization: Bearer $VOICENOTE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-06-18' \
+  --data '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_notes","arguments":{"limit":20}}}'
+```
+
+The server uses stateless JSON responses: no session ID is needed. Subsequent requests include `MCP-Protocol-Version: 2025-06-18`. MCP messages use JSON-RPC 2.0; inspect responses for JSON-RPC errors and tool errors before using results. `tools/list` discovers the available tools. To retrieve a transcript, call `tools/call` with `{"name":"get_note","arguments":{"id":"YOUR_NOTE_ID","include_transcript":true}}` as params.
+
+## Privacy and access
+
+The data belongs to the token owner. A personal token grants read access to all of that user's notes, not just a selected note. Only connect clients you trust. Revoke the token at any time to stop future access; revocation does not erase data already copied to a client. Recording audio is not exposed via MCP. Notes, transcripts, summaries, keywords, todos, and memos can contain private information; avoid placing tokens or note content in public logs.
+
+## Documentation and discovery
+
+- [English guide](https://voicenote-ten-alpha.vercel.app/docs/index.html)
+- [한국어 안내](https://voicenote-ten-alpha.vercel.app/docs/ko/index.html)
+- [中文指南](https://voicenote-ten-alpha.vercel.app/docs/zh/index.html)
+- [LLM index](https://voicenote-ten-alpha.vercel.app/llms.txt)
+- [MCP discovery](https://voicenote-ten-alpha.vercel.app/.well-known/mcp.json)

@@ -1,3 +1,5 @@
+jest.mock('../../i18n/language', () => ({ getLanguage: jest.fn(() => 'ko') }));
+import { getLanguage } from '../../i18n/language';
 /// <reference types="jest" />
 jest.mock('../../core/id', () => {
   let id = 0;
@@ -16,7 +18,7 @@ import { createPipeline } from '../createPipeline';
 import { chunk, fakes, note } from '../testing/fakes';
 import type { LiveSessionState } from '../types';
 
-beforeEach(() => { jest.useFakeTimers(); });
+beforeEach(() => { jest.mocked(getLanguage).mockReturnValue('ko'); jest.useFakeTimers(); });
 afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
 
 test('journals final flush before stop, transcribes in order, then summarizes with memos', async () => {
@@ -300,13 +302,13 @@ test('late summary cannot mark a retranscribing note done', async () => {
   const f = fakes(); await f.deps.store.createNote(note('n', 'summarizing'));
   await f.deps.store.putSegments('n', [{ id: 's', noteId: 'n', startMs: 0, endMs: 1000, text: 'transcript', speakerLabel: null, edited: false }]);
   await f.deps.store.addChunk({ ...chunk('n'), transcribedAt: 'before' });
-  let release!: (value: { summary: []; keywords: []; todos: [] }) => void;
+  let release!: (value: { title: string; summary: []; keywords: []; todos: [] }) => void;
   let entered!: () => void; const started = new Promise<void>(r => { entered = r; });
   jest.mocked(f.deps.sync.summarize).mockImplementationOnce(() => { entered(); return new Promise(r => { release = r; }); });
   const p = createPipeline(f.deps); const work = p.resumeQueues(); await started;
   jest.mocked(f.deps.engine.isModelReady).mockResolvedValue(false);
   await p.retranscribe('n', 'missing');
-  release({ summary: [], keywords: [], todos: [] }); await work;
+  release({ title: 'Topic', summary: [], keywords: [], todos: [] }); await work;
   expect(f.notes.get('n')?.status).toBe('transcribing'); expect(f.summaries.has('n')).toBe(false);
 });
 
@@ -447,4 +449,40 @@ test.each(['done', 'summarizing'] as const)('resume skips summary for an empty %
   expect(putSummary).not.toHaveBeenCalled();
   expect(f.summaries.has('empty')).toBe(false);
   expect(f.notes.get('empty')?.status).toBe('done');
+});
+
+test.each(['2026-10-15 09:07 녹음', 'Recording 2026-10-15 09:07', '录音 2026-10-15 09:07', 'My title', 'meeting.wav'])(
+  'summary replaces only default titles: %s', async title => {
+    const f = fakes();
+    await f.deps.store.createNote({ ...note('n', 'done'), title });
+    await f.deps.store.putSegments('n', [{ id: 's', noteId: 'n', startMs: 0, endMs: 1000, text: 'topic', speakerLabel: null, edited: false }]);
+    const p = createPipeline(f.deps);
+    await p.resummarize('n');
+    const expected = ['My title', 'meeting.wav'].includes(title) ? title : 'Topic';
+    expect(f.notes.get('n')?.title).toBe(expected);
+    jest.mocked(f.deps.sync.summarize).mockResolvedValue({ title: 'Another topic', summary: [], keywords: [], todos: [] });
+    await p.resummarize('n');
+    expect(f.notes.get('n')?.title).toBe(expected);
+    expect(f.summaries.get('n')).not.toHaveProperty('title');
+  },
+);
+
+test('rename during summary request is preserved', async () => {
+  const f = fakes();
+  await f.deps.store.createNote({ ...note('n', 'done'), title: 'Recording 2026-10-15 09:07' });
+  await f.deps.store.putSegments('n', [{ id: 's', noteId: 'n', startMs: 0, endMs: 1000, text: 'topic', speakerLabel: null, edited: false }]);
+  jest.mocked(f.deps.sync.summarize).mockImplementationOnce(async () => {
+    await f.deps.store.updateNote('n', { title: 'User title' });
+    return { title: 'Generated topic', summary: [], keywords: [], todos: [] };
+  });
+  await createPipeline(f.deps).resummarize('n');
+  expect(f.notes.get('n')?.title).toBe('User title');
+});
+
+test.each(['ko', 'en', 'zh'] as const)('recording default title uses %s', async language => {
+  jest.mocked(getLanguage).mockReturnValue(language);
+  const f = fakes();
+  f.deps.now = () => new Date(2026, 9, 15, 9, 7).getTime();
+  const id = await createPipeline(f.deps).startRecording();
+  expect(f.notes.get(id)?.title).toBe({ ko: '2026-10-15 09:07 녹음', en: 'Recording 2026-10-15 09:07', zh: '录音 2026-10-15 09:07' }[language]);
 });

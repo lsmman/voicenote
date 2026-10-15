@@ -24,6 +24,10 @@ export const pipeline = createPipeline({
     const { data, error } = await supabase.auth.getSession();
     return !error && data.session !== null;
   },
+  async userId() {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.user.id ?? null;
+  },
   async isOnline() {
     const state = await getNetworkStateAsync();
     return state.isConnected === true && state.isInternetReachable !== false;

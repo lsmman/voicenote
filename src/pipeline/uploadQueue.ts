@@ -1,3 +1,4 @@
+import type { AudioChunk } from '../core/types';
 import type { LocalStore } from '../store/types';
 import type { SyncService } from '../sync/types';
 import { withTimeout } from './timeout';
@@ -13,7 +14,7 @@ function permanent(error: unknown): boolean {
 
 export function createUploadQueue(deps: {
   store: LocalStore; sync: SyncService; isOnline(): Promise<boolean>;
-  isSignedIn(): Promise<boolean>; now(): number;
+  isSignedIn(): Promise<boolean>; now(): number; userId?(): Promise<string | null>;
 }) {
   let active: Promise<void> | undefined;
   let requested = false;
@@ -38,6 +39,9 @@ export function createUploadQueue(deps: {
     do {
       requested = false;
       const notes = (await deps.store.listNotes()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      // Audio uploaded under a previous account is unreadable for the current one; upload it again.
+      const owner = await deps.userId?.() ?? null;
+      const current = (chunk: AudioChunk) => chunk.remotePath !== null && (!owner || chunk.remotePath.startsWith(`${owner}/`));
       for (const note of notes) {
         const noteSynced = await mirror(`note:${note.id}`, async () => {
           const [segments, memos, summary] = await Promise.all([
@@ -47,7 +51,7 @@ export function createUploadQueue(deps: {
         });
         for (const chunk of (await deps.store.listChunks(note.id)).sort((a, b) => a.seq - b.seq)) {
           const key = `${chunk.noteId}:${chunk.seq}`;
-          if (chunk.remotePath !== null || skipped.has(key)) { retries.delete(key); continue; }
+          if (current(chunk) || skipped.has(key)) { retries.delete(key); continue; }
           if (!chunk.localPath) { skipped.add(key); retries.delete(key); continue; }
           if ((retries.get(key)?.at ?? 0) > deps.now()) continue;
           try {
@@ -64,7 +68,7 @@ export function createUploadQueue(deps: {
         }
         // Chunk rows reference the note row, so they follow a successful note push.
         if (noteSynced) await mirror(`chunks:${note.id}`, async () => {
-          const uploaded = (await deps.store.listChunks(note.id)).filter(chunk => chunk.remotePath !== null);
+          const uploaded = (await deps.store.listChunks(note.id)).filter(current);
           return { fingerprint: uploaded.length ? JSON.stringify(uploaded.map(c => [c.seq, c.remotePath, c.transcribedAt])) : '', push: () => deps.sync.pushChunks(uploaded) };
         });
       }

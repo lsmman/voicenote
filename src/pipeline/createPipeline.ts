@@ -23,6 +23,7 @@ export interface PipelineDeps {
   platform: 'web' | 'native';
   now(): number;
   isSignedIn(): Promise<boolean>;
+  userId?(): Promise<string | null>;
 }
 
 export function createPipeline(deps: PipelineDeps): Pipeline {
@@ -58,11 +59,16 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
       if (!note) throw new Error('Note not found');
       if (!['done', 'summarizing'].includes(note.status)) return;
       try {
+        const segments = await store.listSegments(noteId);
+        if (!segments.length) {
+          if (currentVersion()) await store.updateNote(noteId, { status: 'done' });
+          return;
+        }
         // Keep summarizing while offline; foreground resume retries automatically.
         if (!await deps.isOnline()) return;
         const response = await withTimeout(deps.sync.summarize({
           noteId, title: note.title,
-          segments: await store.listSegments(noteId), memos: await store.listMemos(noteId),
+          segments, memos: await store.listMemos(noteId),
         }), 280_000);
         if (!currentVersion()) return;
         await store.putSummary({ ...response, noteId, createdAt: new Date(deps.now()).toISOString() });

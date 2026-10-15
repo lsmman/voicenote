@@ -145,3 +145,14 @@ test('signed-out sessions push nothing', async () => {
   await createUploadQueue(f.deps).resume();
   expect(f.deps.sync.pushNote).not.toHaveBeenCalled();
 });
+
+test('audio uploaded under another account is uploaded again for the signed-in user', async () => {
+  const f = fakes();
+  await f.deps.store.createNote(note());
+  await f.deps.store.addChunk({ ...chunk(), remotePath: 'old-user/note/0.webm', uploadedAt: 'before' });
+  await f.deps.store.addChunk({ ...chunk('note', 1), remotePath: 'me/note/1.webm', uploadedAt: 'before' });
+  jest.mocked(f.deps.sync.uploadChunk).mockImplementation(async c => `me/${c.noteId}/${c.seq}.webm`);
+  await createUploadQueue({ ...f.deps, userId: async () => 'me' }).resume();
+  expect(jest.mocked(f.deps.sync.uploadChunk).mock.calls.map(([c]) => c.seq)).toEqual([0]);
+  expect(jest.mocked(f.deps.sync.pushChunks).mock.calls.at(-1)?.[0].map(c => c.remotePath)).toEqual(['me/note/0.webm', 'me/note/1.webm']);
+});

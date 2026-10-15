@@ -247,6 +247,7 @@ test('import creates recording then journals one measured chunk before transcrib
 
 test('summary failure survives pipeline restart as done with no summary', async () => {
   const f = fakes(); await f.deps.store.createNote(note('n', 'done'));
+  await f.deps.store.putSegments('n', [{ id: 's', noteId: 'n', startMs: 0, endMs: 1000, text: 'transcript', speakerLabel: null, edited: false }]);
   jest.mocked(f.deps.sync.summarize).mockRejectedValueOnce(new Error('offline'));
   await createPipeline(f.deps).resumeQueues();
   expect(f.notes.get('n')?.status).toBe('done'); expect(f.summaries.has('n')).toBe(false);
@@ -256,6 +257,7 @@ test('summary failure survives pipeline restart as done with no summary', async 
 
 test('summary times out at 280s without blocking transcription or import', async () => {
   const f = fakes(); await f.deps.store.createNote(note('n', 'summarizing'));
+  await f.deps.store.putSegments('n', [{ id: 's', noteId: 'n', startMs: 0, endMs: 1000, text: 'transcript', speakerLabel: null, edited: false }]);
   let entered!: () => void; const started = new Promise<void>(r => { entered = r; });
   jest.mocked(f.deps.sync.summarize).mockImplementationOnce(() => { entered(); return new Promise(() => {}); });
   const p = createPipeline(f.deps); const work = p.resumeQueues(); await started;
@@ -296,6 +298,7 @@ test('memo prefers synchronous recorder elapsed getter', async () => {
 
 test('late summary cannot mark a retranscribing note done', async () => {
   const f = fakes(); await f.deps.store.createNote(note('n', 'summarizing'));
+  await f.deps.store.putSegments('n', [{ id: 's', noteId: 'n', startMs: 0, endMs: 1000, text: 'transcript', speakerLabel: null, edited: false }]);
   await f.deps.store.addChunk({ ...chunk('n'), transcribedAt: 'before' });
   let release!: (value: { summary: []; keywords: []; todos: [] }) => void;
   let entered!: () => void; const started = new Promise<void>(r => { entered = r; });
@@ -393,6 +396,7 @@ test('signed-out foreground resume retries done notes without summaries', async 
   const f = fakes();
   jest.mocked(f.deps.isSignedIn).mockResolvedValue(false);
   await f.deps.store.createNote(note('anonymous', 'done'));
+  await f.deps.store.putSegments('anonymous', [{ id: 's', noteId: 'anonymous', startMs: 0, endMs: 1000, text: 'transcript', speakerLabel: null, edited: false }]);
   const p = createPipeline(f.deps);
   await p.resumeQueues();
   expect(f.summaries.has('anonymous')).toBe(true);
@@ -404,6 +408,7 @@ test('manual resummarize exposes 429 while automatic retries preserve the done n
   const f = fakes();
   jest.mocked(f.deps.isSignedIn).mockResolvedValue(false);
   await f.deps.store.createNote(note('limited', 'done'));
+  await f.deps.store.putSegments('limited', [{ id: 's', noteId: 'limited', startMs: 0, endMs: 1000, text: 'transcript', speakerLabel: null, edited: false }]);
   const error = Object.assign(new Error('요약 요청이 많아요. 잠시 후 다시 시도해 주세요'), { status: 429 });
   jest.mocked(f.deps.sync.summarize).mockRejectedValueOnce(error).mockRejectedValueOnce(error);
   const p = createPipeline(f.deps);
@@ -428,4 +433,18 @@ test('resume with a note waiting for transcription starts the model download', a
   const p = createPipeline(f.deps);
   await p.resumeQueues(); await jest.advanceTimersByTimeAsync(0);
   expect(f.download).toHaveBeenCalled();
+});
+
+test.each(['done', 'summarizing'] as const)('resume skips summary for an empty %s note', async status => {
+  const f = fakes();
+  await f.deps.store.createNote(note('empty', status));
+  await f.deps.store.addChunk({ ...chunk('empty'), transcribedAt: 'before', uploadedAt: 'before', remotePath: 'remote/empty/0' });
+  const putSummary = jest.spyOn(f.deps.store, 'putSummary');
+  const p = createPipeline(f.deps);
+  await p.resumeQueues();
+  await p.resummarize('empty');
+  expect(f.deps.sync.summarize).not.toHaveBeenCalled();
+  expect(putSummary).not.toHaveBeenCalled();
+  expect(f.summaries.has('empty')).toBe(false);
+  expect(f.notes.get('empty')?.status).toBe('done');
 });

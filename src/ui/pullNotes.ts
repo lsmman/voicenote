@@ -4,11 +4,17 @@ import { store, sync } from '../services';
 export async function pullMissingNotes(): Promise<void> {
   const remote = await sync.pullNotes();
   for (const note of remote) {
-    if (await store.getNote(note.id)) continue;
-    // Chunks first: a note without its chunk rows would look like it still needs transcription.
+    if (await store.getNote(note.id)) {
+      if (!(await store.listSegments(note.id)).length) await pullMissingDetail(note.id);
+      continue;
+    }
+    const detail = await sync.pullNoteDetail(note.id);
     const chunks = await sync.pullChunks(note.id);
-    await store.createNote(note);
+    await store.putSegments(note.id, detail.segments);
+    for (const memo of detail.memos) await store.addMemo(memo);
+    if (detail.summary) await store.putSummary(detail.summary);
     for (const chunk of chunks) await store.addChunk(chunk);
+    await store.createNote(note);
   }
 }
 export async function pullMissingDetail(noteId: string): Promise<void> {
@@ -19,5 +25,5 @@ export async function pullMissingDetail(noteId: string): Promise<void> {
   if (missing.length) await store.putSegments(noteId, missing);
   const memoIds = new Set(memos.map(item => item.id));
   for (const memo of remote.memos) if (!memoIds.has(memo.id)) await store.addMemo(memo);
-  if (!summary && remote.summary) await store.putSummary(remote.summary);
+  if ((!summary || !summary.summary.length) && remote.summary) await store.putSummary(remote.summary);
 }

@@ -7,6 +7,7 @@ import * as Linking from 'expo-linking';
 import { pipeline, store } from '../services';
 import { supabase } from '../sync';
 import { handleAuthRedirect } from '../sync/auth';
+import { loadScheduledStart, startScheduledStartWatcher } from '../ui/scheduledStart';
 import { webLocks } from '../ui/recordingSession';
 import { recoverUnfinished, type RecoveryChoice } from '../ui/recovery';
 import { Button, Notice } from '../ui/primitives';
@@ -52,6 +53,7 @@ export default function RootLayout() {
     let alive = true;
     if (!startup.current) startup.current = (async () => {
       await loadLanguage();
+      await loadScheduledStart();
       await store.init();
       // Queue resumption failure must not hide local notes or recording.
       void pipeline.resumeQueues().catch(() => { if (alive) setError(t('resumeStartupError')); });
@@ -64,6 +66,9 @@ export default function RootLayout() {
     startup.current.then(() => { if (alive) setReady(true); }).catch(() => { if (alive) setError(t('prepareNotesError')); });
     return () => { alive = false; };
   }, [retry]);
+  useEffect(() => {
+    if (ready) return startScheduledStartWatcher(pipeline);
+  }, [ready]);
   useEffect(() => {
     const seen = new Set<string>();
     const redirect = async (url: string | null) => {

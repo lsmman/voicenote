@@ -2,6 +2,28 @@ import type { Language } from './language';
 
 // Korean is the source of truth for message keys and interpolation parameters.
 export const ko = {
+  "scheduledStart": "예약 녹음",
+  "scheduledStartTime": "시작 시각 (HH:mm)",
+  "scheduledStartPreset": "{minutes}분 후",
+  "scheduledStartEndLabel": "종료 예약",
+  "scheduledStartNoEnd": "없음",
+  "scheduledStartDuration": "시작 후 {minutes}분",
+  "scheduledStartStatus": "{time}에 녹음 시작 ({hours}시간 {minutes}분 후)",
+  "scheduledStartEnd": " · {time}에 종료",
+  "scheduledStartWebNotice": "웹에서는 이 탭을 열어 두고 컴퓨터가 절전 모드로 전환되지 않게 해 주세요.",
+  "scheduledStartPhoneNotice": "휴대폰에서는 앱을 열어 두세요.",
+  "scheduledStartMissed": "예약 시작 시각이 10분 넘게 지나 녹음을 시작하지 않았어요.",
+  "scheduledStartClockHint": "시작은 오늘 또는 내일의 다음 시각이며, 종료는 시작 이후의 다음 시각이에요.",
+
+  "scheduledStop": "예약 종료",
+  "stopPresetMinutes": "30분",
+  "stopPresetHours": "{hours}시간",
+  "stopTimeLabel": "종료 시각 (HH:mm)",
+  "setStopTime": "설정",
+  "cancelStopTime": "예약 취소",
+  "invalidStopTime": "00:00~23:59 형식으로 입력해 주세요.",
+  "scheduledStopStatus": "{time}에 자동 종료 ({hours}시간 {minutes}분 후)",
+
   "login": "로그인",
   "settings": "설정",
   "note": "노트",
@@ -201,6 +223,28 @@ export type MessageKey = keyof typeof ko;
 type Dictionary = { [Key in MessageKey]: string };
 
 export const en = {
+  "scheduledStart": "Schedule recording",
+  "scheduledStartTime": "Start time (HH:mm)",
+  "scheduledStartPreset": "In {minutes} min",
+  "scheduledStartEndLabel": "Scheduled end",
+  "scheduledStartNoEnd": "None",
+  "scheduledStartDuration": "{minutes} min after start",
+  "scheduledStartStatus": "Recording starts at {time} (in {hours}h {minutes}m)",
+  "scheduledStartEnd": " · stops at {time}",
+  "scheduledStartWebNotice": "On web, keep this tab open and the computer awake.",
+  "scheduledStartPhoneNotice": "On phones, keep the app open.",
+  "scheduledStartMissed": "The scheduled start was missed by more than 10 minutes. Recording did not start.",
+  "scheduledStartClockHint": "Start uses the next occurrence today or tomorrow. End uses the next occurrence after start.",
+
+  "scheduledStop": "Scheduled stop",
+  "stopPresetMinutes": "30 min",
+  "stopPresetHours": "{hours} h",
+  "stopTimeLabel": "Stop time (HH:mm)",
+  "setStopTime": "Set",
+  "cancelStopTime": "Cancel schedule",
+  "invalidStopTime": "Enter a valid time from 00:00 to 23:59.",
+  "scheduledStopStatus": "Stops automatically at {time} (in {hours}h {minutes}m)",
+
   "login": "Sign in",
   "settings": "Settings",
   "note": "Note",
@@ -397,6 +441,28 @@ export const en = {
 } satisfies Dictionary;
 
 export const zh = {
+  "scheduledStart": "预约录音",
+  "scheduledStartTime": "开始时间 (HH:mm)",
+  "scheduledStartPreset": "{minutes}分钟后",
+  "scheduledStartEndLabel": "预约结束",
+  "scheduledStartNoEnd": "无",
+  "scheduledStartDuration": "开始后{minutes}分钟",
+  "scheduledStartStatus": "将在 {time} 开始录音（{hours}小时 {minutes}分钟后）",
+  "scheduledStartEnd": " · {time}结束",
+  "scheduledStartWebNotice": "网页版请保持此标签页打开，并让电脑保持唤醒。",
+  "scheduledStartPhoneNotice": "手机上请保持应用打开。",
+  "scheduledStartMissed": "已超过预约开始时间10分钟，未启动录音。",
+  "scheduledStartClockHint": "开始时间为今天或明天的下一次该时刻，结束时间为开始后的下一次该时刻。",
+
+  "scheduledStop": "定时结束",
+  "stopPresetMinutes": "30分钟",
+  "stopPresetHours": "{hours}小时",
+  "stopTimeLabel": "结束时间 (HH:mm)",
+  "setStopTime": "设置",
+  "cancelStopTime": "取消定时",
+  "invalidStopTime": "请输入 00:00 至 23:59 之间的有效时间。",
+  "scheduledStopStatus": "将在 {time} 自动结束（剩余 {hours}小时 {minutes}分钟）",
+
   "login": "登录",
   "settings": "设置",
   "note": "笔记",

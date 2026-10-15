@@ -11,6 +11,8 @@ export interface LiveSessionState {
   noteId: string;
   state: RecorderState;
   elapsedMs: number;
+  stopAt: number | null;
+  stopError?: string;
   level: number;
   warnings: RecorderWarning[];
   liveSegments: Segment[]; // transcribed so far
@@ -22,6 +24,7 @@ export interface LiveSessionState {
 export interface Pipeline {
   // Recording session
   startRecording(title?: string): Promise<string>; // returns noteId
+  scheduleStop(at: number | null): void;
   pauseRecording(): Promise<void>;
   resumeRecording(): Promise<void>;
   stopRecording(): Promise<void>; // note -> 'transcribing' until queue drains, then summarize

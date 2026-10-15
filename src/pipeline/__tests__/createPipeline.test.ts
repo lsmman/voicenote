@@ -486,3 +486,98 @@ test.each(['ko', 'en', 'zh'] as const)('recording default title uses %s', async 
   const id = await createPipeline(f.deps).startRecording();
   expect(f.notes.get(id)?.title).toBe({ ko: '2026-10-15 09:07 녹음', en: 'Recording 2026-10-15 09:07', zh: '录音 2026-10-15 09:07' }[language]);
 });
+
+test('scheduled stop saves at the deadline and clears its timer', async () => {
+  const f = fakes(); const p = createPipeline(f.deps); const listener = jest.fn();
+  p.subscribe(listener);
+  const id = await p.startRecording();
+  expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ stopAt: null }));
+  jest.mocked(f.deps.recorder.stop).mockImplementation(async () => { f.events().onChunk?.(chunk(id)); });
+  const at = Date.now() + 30_000;
+  p.scheduleStop(at);
+  expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ stopAt: at }));
+  await jest.advanceTimersByTimeAsync(29_999);
+  expect(f.deps.recorder.stop).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(1);
+  expect(f.deps.recorder.stop).toHaveBeenCalledTimes(1);
+  expect(f.notes.get(id)?.durationMs).toBe(30_000);
+  expect(f.history).toContain('transcribing');
+  expect(listener).toHaveBeenLastCalledWith(null);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+test.each(['elapsed', 'chunk', 'pause', 'resume'] as const)('missed timer stops on %s at the deadline', async trigger => {
+  const f = fakes(); let now = Date.now(); f.deps.now = () => now;
+  const p = createPipeline(f.deps); const id = await p.startRecording();
+  if (trigger === 'resume') await p.pauseRecording();
+  p.scheduleStop(now + 1000);
+  now += 1000; // No timers have run: simulate suspended JavaScript timers.
+  if (trigger === 'elapsed') f.events().onElapsed?.(1000);
+  if (trigger === 'chunk') f.events().onChunk?.(chunk(id));
+  if (trigger === 'pause') await p.pauseRecording();
+  if (trigger === 'resume') await p.resumeRecording();
+  await jest.advanceTimersByTimeAsync(0);
+  expect(f.deps.recorder.stop).toHaveBeenCalledTimes(1);
+  expect(f.history).toContain('transcribing');
+});
+
+test('cancelled deadline does not stop via timer or progress', async () => {
+  const f = fakes(); const p = createPipeline(f.deps); const listener = jest.fn(); p.subscribe(listener);
+  await p.startRecording(); p.scheduleStop(Date.now() + 1000); p.scheduleStop(null);
+  expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ stopAt: null }));
+  await jest.advanceTimersByTimeAsync(2000); f.events().onElapsed?.(2000);
+  expect(f.deps.recorder.stop).not.toHaveBeenCalled();
+  await p.stopRecording();
+});
+
+test('past deadline starts stopping immediately without advancing timers', async () => {
+  const f = fakes(); const p = createPipeline(f.deps); await p.startRecording();
+  p.scheduleStop(Date.now() - 1);
+  await Promise.resolve();
+  expect(f.deps.recorder.stop).toHaveBeenCalledTimes(1);
+  await p.stopRecording();
+});
+
+test('timer, reentrant progress and manual stop share exactly one stop', async () => {
+  const f = fakes(); const p = createPipeline(f.deps); const id = await p.startRecording();
+  let release!: () => void;
+  jest.mocked(f.deps.recorder.stop).mockImplementation(() => {
+    f.events().onElapsed?.(1000); f.events().onChunk?.(chunk(id));
+    return new Promise<void>(resolve => { release = resolve; });
+  });
+  p.scheduleStop(Date.now() + 1000);
+  await jest.advanceTimersByTimeAsync(1000);
+  const manual = p.stopRecording();
+  f.events().onElapsed?.(1001);
+  expect(f.deps.recorder.stop).toHaveBeenCalledTimes(1);
+  release(); await manual;
+  await jest.advanceTimersByTimeAsync(1000);
+  expect(f.deps.recorder.stop).toHaveBeenCalledTimes(1);
+});
+
+test('rescheduling replaces the timer and a paused session still stops', async () => {
+  const f = fakes(); const p = createPipeline(f.deps); await p.startRecording();
+  p.scheduleStop(Date.now() + 1000); p.scheduleStop(Date.now() + 2000);
+  await p.pauseRecording(); await jest.advanceTimersByTimeAsync(1000);
+  expect(f.deps.recorder.stop).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(1000);
+  expect(f.deps.recorder.stop).toHaveBeenCalledTimes(1);
+});
+
+test('manual stop clears a schedule before a new session starts', async () => {
+  const f = fakes(); const p = createPipeline(f.deps); await p.startRecording();
+  p.scheduleStop(Date.now() + 1000); await p.stopRecording(); await p.startRecording();
+  await jest.advanceTimersByTimeAsync(2000);
+  expect(f.deps.recorder.stop).toHaveBeenCalledTimes(1);
+  await p.stopRecording();
+});
+
+test('automatic save failure reports an error on the live session without retrying stop', async () => {
+  const f = fakes(); const p = createPipeline(f.deps); const listener = jest.fn(); p.subscribe(listener);
+  await p.startRecording();
+  jest.spyOn(f.deps.store, 'updateNote').mockRejectedValueOnce(new Error('disk full'));
+  p.scheduleStop(Date.now() + 1000); await jest.advanceTimersByTimeAsync(1000);
+  expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ stopError: 'disk full', state: 'idle', stopAt: null }));
+  f.events().onElapsed?.(2000); await jest.advanceTimersByTimeAsync(1000);
+  expect(f.deps.recorder.stop).toHaveBeenCalledTimes(1);
+});

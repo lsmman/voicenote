@@ -31,6 +31,8 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
   const { store, recorder } = deps;
   let live: LiveSessionState | null = null;
   let starting = false;
+  let stopTimer: ReturnType<typeof setTimeout> | undefined;
+  let deadlineStopping = false;
   let stopping: Promise<void> | undefined;
   let lastElapsedAt = deps.now();
   let lastLevelNotification = -Infinity;
@@ -49,6 +51,31 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
       catch { /* A view listener must not interrupt persistence or recording. */ }
     }
   };
+
+  function clearStopTimer() {
+    if (stopTimer !== undefined) clearTimeout(stopTimer);
+    stopTimer = undefined;
+  }
+  function checkStopDeadline(): boolean {
+    if (stopping || deadlineStopping) return true;
+    if (!live || starting || live.stopAt === null || deps.now() < live.stopAt ||
+        !['recording', 'paused'].includes(live.state)) return false;
+    const session = live;
+    // Lock before recorder.stop(): it can synchronously emit progress callbacks.
+    deadlineStopping = true;
+    clearStopTimer();
+    void pipeline.stopRecording().catch(error => {
+      session.stopError = error instanceof Error ? error.message : String(error);
+      notify();
+    }).finally(() => { deadlineStopping = false; });
+    return true;
+  }
+  function armStopTimer() {
+    clearStopTimer();
+    if (!live || live.stopAt === null || checkStopDeadline()) return;
+    // Avoid overflowing the signed 32-bit timeout for distant deadlines.
+    stopTimer = setTimeout(armStopTimer, Math.min(2_147_483_647, Math.max(1, live.stopAt - deps.now())));
+  }
 
   function summarize(noteId: string): Promise<void> {
     const pending = summaries.get(noteId);
@@ -148,7 +175,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
       try {
         await store.createNote(note);
         lastElapsedAt = deps.now(); lastLevelNotification = -Infinity;
-        live = { noteId: note.id, state: 'idle', elapsedMs: 0, level: 0, warnings: [], liveSegments: [], memos: [], pendingChunks: 0 };
+        live = { noteId: note.id, state: 'idle', elapsedMs: 0, stopAt: null, level: 0, warnings: [], liveSegments: [], memos: [], pendingChunks: 0 };
         notify();
         await recorder.start(note.id, {
           onChunk(chunk) {
@@ -158,8 +185,9 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
               if (live?.noteId === note.id) { live.pendingChunks += 1; notify(); }
               kick();
             });
+            if (live?.noteId === note.id) checkStopDeadline();
           },
-          onElapsed(ms) { if (live?.noteId === note.id) { live.elapsedMs = ms; lastElapsedAt = deps.now(); notify(); } },
+          onElapsed(ms) { if (live?.noteId === note.id) { live.elapsedMs = ms; lastElapsedAt = deps.now(); notify(); checkStopDeadline(); } },
           onLevel(level) { if (live?.noteId === note.id) { live.level = level; notify(true); } },
           onStateChange(state) {
             if (live?.noteId !== note.id) return;
@@ -189,17 +217,39 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
             await store.updateNote(note.id, { status: 'error' });
           }
         } catch { /* Preserve the original start failure. */ }
-        finally { live = null; notify(); }
+        finally { clearStopTimer(); live = null; notify(); }
         throw error;
       } finally { starting = false; }
     },
-    async pauseRecording() { requireLive(); await recorder.pause(); if (live) live.state = recorder.getState(); notify(); },
-    async resumeRecording() { requireLive(); await recorder.resume(); if (live) live.state = recorder.getState(); notify(); },
+    scheduleStop(at) {
+      const session = requireLive();
+      if (at !== null && !Number.isFinite(at)) throw new Error('Invalid stop deadline');
+      session.stopAt = at;
+      notify();
+      armStopTimer();
+    },
+    async pauseRecording() {
+      if (checkStopDeadline()) { await stopping; return; }
+      requireLive(); await recorder.pause();
+      if (live && !stopping) live.state = recorder.getState();
+      notify(); if (checkStopDeadline()) await stopping;
+    },
+    async resumeRecording() {
+      if (checkStopDeadline()) { await stopping; return; }
+      requireLive(); await recorder.resume();
+      if (live && !stopping) live.state = recorder.getState();
+      notify(); if (checkStopDeadline()) await stopping;
+    },
     stopRecording() {
       if (stopping) return stopping;
       if (!live || starting) return Promise.reject(new Error('No active recording'));
       const session = live;
-      stopping = (async () => {
+      clearStopTimer();
+      session.stopAt = null;
+      session.stopError = undefined;
+      let saveFailed = false;
+      // Defer recorder callbacks until the shared stop promise has been assigned.
+      stopping = Promise.resolve().then(async () => {
         let stopFailed = false;
         try { await withTimeout(recorder.stop(), 120_000); }
         catch { stopFailed = true; }
@@ -213,7 +263,12 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
           status: 'transcribing', gaps: [...note.gaps, ...gaps],
         });
         kick();
-      })().finally(() => { live = null; stopping = undefined; notify(); });
+      }).catch(error => {
+        saveFailed = true;
+        session.state = 'idle';
+        session.stopError = error instanceof Error ? error.message : String(error);
+        throw error;
+      }).finally(() => { live = saveFailed ? session : null; stopping = undefined; notify(); });
       return stopping;
     },
     async addMemo(text, kind) {

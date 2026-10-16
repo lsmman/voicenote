@@ -7,6 +7,7 @@ import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
 import { startOrAttachRecording, webLocks } from '../ui/recordingSession';
 import { pipeline } from '../services';
+import { completeScheduledRecordingStart } from '../ui/scheduledStart';
 import type { LiveSessionState } from '../pipeline/types';
 import type { RecorderWarning } from '../recorder/types';
 import { confirmAction } from '../ui/actions';
@@ -21,13 +22,13 @@ export default function RecordScreen() {
   const [live, setLive] = useState<LiveSessionState | null>(null);
   const [noteId, setNoteId] = useState(''); const [starting, setStarting] = useState(true);
   const [startError, setStartError] = useState(false); const [memo, setMemo] = useState(''); const [attached, setAttached] = useState('');
-  const { stopAt } = useLocalSearchParams<{ stopAt?: string }>();
+  const { stopAt, scheduleId } = useLocalSearchParams<{ stopAt?: string; scheduleId?: string }>();
   const routeStopApplied = useRef(false);
   useEffect(() => {
     if (starting || !live || live.noteId !== noteId || routeStopApplied.current) return;
     routeStopApplied.current = true;
     const at = typeof stopAt === 'string' && stopAt.trim() ? Number(stopAt) : NaN;
-    if (Number.isFinite(at) && at > Date.now()) pipeline.scheduleStop(at);
+    if (Number.isFinite(at)) pipeline.scheduleStop(at);
   }, [starting, live, noteId, stopAt]);
   const finished = useRef(false);
   const manualStop = useRef(false);
@@ -58,7 +59,7 @@ export default function RecordScreen() {
     });
     // Returning through browser history must reattach to the live recording.
     if (!startPromise.current) startPromise.current = startOrAttachRecording(pipeline, webLocks(Platform.OS === 'web'));
-    startPromise.current.then(id => { if (alive) setNoteId(id); }).catch(error => { if (alive) { setStartError(true); if (error instanceof Error && error.message === t('recordingOtherTab')) task.setError(error.message); } }).finally(() => { if (alive) setStarting(false); });
+    startPromise.current.then(id => { if (scheduleId) completeScheduledRecordingStart(scheduleId, id); if (alive) setNoteId(id); }).catch(error => { if (scheduleId) completeScheduledRecordingStart(scheduleId, null); if (alive) { setStartError(true); if (error instanceof Error && error.message === t('recordingOtherTab')) task.setError(error.message); } }).finally(() => { if (alive) setStarting(false); });
     return () => { alive = false; unsubscribe(); };
   }, []);
   const blocking = starting || !!live;

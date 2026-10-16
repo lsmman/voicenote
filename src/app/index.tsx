@@ -14,14 +14,15 @@ import type { Note } from '../core/types';
 import { formatDate, formatTime, statusLabel } from '../ui/format';
 import { Button, Input, Notice, Screen } from '../ui/primitives';
 import { shadow, styles, type, useIsDark, useTheme } from '../ui/theme';
-import { clearScheduledStart, dismissMissedStart, nextScheduleTime, setScheduledStart, useScheduledStart } from '../ui/scheduledStart';
+import { addScheduledStart, dismissMissedStart, nextScheduleTime, removeScheduledStart, useScheduledStarts } from '../ui/scheduledStart';
 import { useTask } from '../ui/useTask';
 
 export default function NotesScreen() {
   useT();
   const c = useTheme(); const dark = useIsDark(); const { session } = useSession(); const task = useTask();
   const modelState = useModelState();
-  const { schedule, missed } = useScheduledStart();
+  const { schedules, missed } = useScheduledStarts();
+  const schedule = schedules[0];
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -85,11 +86,16 @@ export default function NotesScreen() {
       <Text style={[styles.title, { color: c.text }]}>{t('homeTitle')}</Text>
       {liveRecording && <View style={styles.card}><Notice text={t('recordingExists')} /><Link href="/record" onPress={event => { event.preventDefault(); openRecord(); }} style={{ color: c.accent, padding: 12 }}>{t('return')}</Link></View>}
       {schedule && <View style={{ gap: 8 }}>
-        <Notice tone="info" text={t('scheduledStartStatus', { time: clockTime(schedule.startAt), hours: Math.floor(remaining / 60), minutes: remaining % 60 }) + (schedule.stopAt ? t('scheduledStartEnd', { time: clockTime(schedule.stopAt) }) : '')} />
+        <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled>
+          {schedules.map(item => <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ color: c.text, flex: 1 }}>{scheduleTime(item.startAt, now)}{item.stopAt !== null ? ` → ${scheduleTime(item.stopAt, now)}` : ''}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={`${t('cancelStopTime')} ${scheduleTime(item.startAt, now)}`} onPress={() => { void removeScheduledStart(item.id); }} style={{ minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: c.text, fontSize: 24 }}>×</Text></Pressable>
+          </View>)}
+        </ScrollView>
+        <Notice tone="info" text={t('scheduledStartStatus', { time: clockTime(schedule.startAt), hours: Math.floor(remaining / 60), minutes: remaining % 60 })} />
         <Notice text={t(Platform.OS === 'web' ? 'scheduledStartWebNotice' : 'scheduledStartPhoneNotice')} />
-        <Button compact title={t('cancelStopTime')} onPress={() => { void clearScheduledStart(); }} />
       </View>}
-      {missed && <View style={{ gap: 8 }}><Notice tone="warning" text={t('scheduledStartMissed')} /><Button compact title={t('close')} onPress={dismissMissedStart} /></View>}
+      {missed.length > 0 && <View style={{ gap: 8 }}><Notice tone="warning" text={t('scheduledStartMissed', { count: missed.length })} /><Button compact title={t('close')} onPress={dismissMissedStart} /></View>}
       <Input variant="search" accessibilityLabel={t('searchNotes')} placeholder={t('searchPlaceholder')} value={query} onChangeText={setQuery} returnKeyType="search" />
       <View style={styles.row}><Button compact title={task.busy ? t('importing') : t('importFile')} onPress={() => { void importFile(); }} disabled={task.busy} /><Button compact title={t('refresh')} onPress={() => { void refresh(); }} disabled={refreshing} /></View>
       {!!task.error && <Notice text={task.error} error />}
@@ -107,6 +113,10 @@ export default function NotesScreen() {
   </Screen>;
 }
 
+function scheduleTime(at: number, now: number) {
+  const date = new Date(at);
+  return clockTime(at) + (date.toDateString() === new Date(now).toDateString() ? '' : ` (${formatDate(date.toISOString())})`);
+}
 function clockTime(at: number) {
   const date = new Date(at);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
@@ -121,11 +131,15 @@ function SchedulePanel({ visible, onClose }: { visible: boolean; onClose: () => 
   const save = () => {
     const now = Date.now();
     const startAt = preset === null ? nextScheduleTime(startTime, now) : now + preset * 60_000;
-    if (startAt === null) { setError(t('invalidStopTime')); return; }
+    if (startAt === null) { setError(t('scheduledStartInvalidTime')); return; }
     // Clock end is the next occurrence after the start, including overnight schedules.
     const stopAt = end === 'time' ? nextScheduleTime(endTime, startAt) : end === null ? null : startAt + end * 60_000;
-    if (end === 'time' && (stopAt === null || stopAt <= startAt)) { setError(t('invalidStopTime')); return; }
-    void setScheduledStart({ startAt, stopAt });
+    if (end === 'time' && (stopAt === null || stopAt <= startAt)) { setError(t('scheduledStartInvalidTime')); return; }
+    const result = addScheduledStart({ startAt, stopAt });
+    if (result) {
+      setError(t(result === 'overlap' ? 'scheduledStartOverlap' : result === 'tooMany' ? 'scheduledStartTooMany' : 'scheduledStartInvalidTime'));
+      return;
+    }
     setError('');
     onClose();
   };

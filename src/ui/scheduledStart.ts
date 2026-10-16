@@ -2,38 +2,45 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncExternalStore } from 'react';
 import { AppState, Platform } from 'react-native';
 import { router } from 'expo-router';
-import type { Pipeline } from '../pipeline/types';
+import type { LiveSessionState, Pipeline } from '../pipeline/types';
 
-export type ScheduledStart = { startAt: number; stopAt: number | null };
-const KEY = 'voicenote.scheduledStart';
+export type ScheduledStart = { id: string; startAt: number; stopAt: number | null };
+type Window = Omit<ScheduledStart, 'id'>;
+export type ScheduleError = 'invalidTime' | 'overlap' | 'tooMany';
+const KEY = 'voicenote.scheduledStarts';
+const OLD_KEY = 'voicenote.scheduledStart';
 const MAX_DELAY = 2 ** 31 - 1;
-let snapshot: { schedule: ScheduledStart | null; missed: boolean } = { schedule: null, missed: false };
+let snapshot: { schedules: ScheduledStart[]; missed: number[] } = { schedules: [], missed: [] };
 const listeners = new Set<() => void>();
 let revision = 0;
+let sequence = 0;
 let writes = Promise.resolve();
 let recheck: (() => void) | null = null;
 let stopWatcher: (() => void) | null = null;
+let launched: { schedule: ScheduledStart; noteId: string | null; stopAt: number | null } | null = null;
 const emit = () => listeners.forEach(listener => listener());
 export const getScheduledStart = () => snapshot;
 export function subscribeScheduledStart(listener: () => void) {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
-export function useScheduledStart() {
+export function useScheduledStarts() {
   return useSyncExternalStore(subscribeScheduledStart, getScheduledStart, getScheduledStart);
 }
-function valid(value: unknown): value is ScheduledStart {
+function valid(value: unknown): value is Window {
   if (!value || typeof value !== 'object') return false;
-  const { startAt, stopAt } = value as ScheduledStart;
+  const { startAt, stopAt } = value as Window;
   return typeof startAt === 'number' && Number.isFinite(startAt) && startAt > 0 && startAt <= 8.64e15
     && (stopAt === null || (typeof stopAt === 'number' && Number.isFinite(stopAt) && stopAt > startAt && stopAt <= 8.64e15));
 }
-function persist(schedule: ScheduledStart | null) {
-  // Serialize writes so a slow set cannot resurrect a canceled schedule.
+const id = () => `${Date.now()}-${++sequence}`;
+const sorted = (items: ScheduledStart[]) => [...items].sort((a, b) => a.startAt - b.startAt);
+function persist(items: ScheduledStart[]) {
+  // Serialize mutations and migration; remove legacy data only after the new write succeeds.
   writes = writes.then(async () => {
     try {
-      if (schedule) await AsyncStorage.setItem(KEY, JSON.stringify(schedule));
-      else await AsyncStorage.removeItem(KEY);
+      await AsyncStorage.setItem(KEY, JSON.stringify(items));
+      await AsyncStorage.removeItem(OLD_KEY);
     } catch { /* Storage unavailable: retain in-memory behavior. */ }
   });
   return writes;
@@ -41,68 +48,128 @@ function persist(schedule: ScheduledStart | null) {
 export async function loadScheduledStart() {
   const version = revision;
   try {
+    await writes;
     const raw = await AsyncStorage.getItem(KEY);
+    const legacy = raw === null ? await AsyncStorage.getItem(OLD_KEY) : null;
     if (version !== revision) return;
-    const value: unknown = raw ? JSON.parse(raw) : null;
-    snapshot = { ...snapshot, schedule: valid(value) ? value : null };
+    const value: unknown = JSON.parse(raw ?? legacy ?? 'null');
+    const seen = new Set<string>();
+    const schedules = raw === null
+      ? (valid(value) ? [{ ...value, id: id() }] : [])
+      : (Array.isArray(value) ? value.filter((item): item is ScheduledStart => {
+        if (!valid(item) || typeof (item as ScheduledStart).id !== 'string' || !(item as ScheduledStart).id || seen.has((item as ScheduledStart).id)) return false;
+        seen.add((item as ScheduledStart).id); return true;
+      }) : []);
+    snapshot = { ...snapshot, schedules: sorted(schedules).slice(0, 20) };
+    revision++;
+    void persist(snapshot.schedules);
     emit();
     recheck?.();
-  } catch { /* Keep the in-memory schedule. */ }
+    await writes;
+  } catch { /* Keep the in-memory schedules. */ }
 }
-export function setScheduledStart(schedule: ScheduledStart) {
-  if (!valid(schedule)) throw new Error('Invalid recording schedule');
+export function addScheduledStart(schedule: Window): ScheduleError | null {
+  if (!valid(schedule) || schedule.startAt <= Date.now()) return 'invalidTime';
+  if (snapshot.schedules.length >= 20) return 'tooMany';
+  const end = (item: Window) => item.stopAt ?? item.startAt + 60_000;
+  if (snapshot.schedules.some(item => schedule.startAt < end(item) && item.startAt < end(schedule))) return 'overlap';
+  let nextId = id();
+  while (snapshot.schedules.some(item => item.id === nextId)) nextId = id();
   revision++;
-  snapshot = { schedule: { ...schedule }, missed: false };
-  const saved = persist(snapshot.schedule);
-  emit();
-  recheck?.();
-  return saved;
+  snapshot = { ...snapshot, schedules: sorted([...snapshot.schedules, { ...schedule, id: nextId }]) };
+  void persist(snapshot.schedules);
+  emit(); recheck?.();
+  return null;
 }
-export function clearScheduledStart() {
+export function removeScheduledStart(id: string) {
   revision++;
-  snapshot = { ...snapshot, schedule: null };
-  const saved = persist(null);
-  emit();
-  recheck?.();
+  snapshot = { ...snapshot, schedules: snapshot.schedules.filter(item => item.id !== id) };
+  const saved = persist(snapshot.schedules);
+  emit(); recheck?.();
   return saved;
 }
 export function dismissMissedStart() {
-  snapshot = { ...snapshot, missed: false };
+  snapshot = { ...snapshot, missed: [] };
   emit();
 }
+/** The record screen confirms which session belongs to this scheduled navigation. */
+export function completeScheduledRecordingStart(scheduleId: string, noteId: string | null) {
+  if (launched?.schedule.id !== scheduleId) return;
+  if (noteId) launched.noteId = noteId;
+  else {
+    snapshot = { ...snapshot, missed: [...snapshot.missed, launched.schedule.startAt] };
+    launched = null; emit();
+  }
+  recheck?.();
+}
 /** Start only after storage and the root navigator are ready. Idempotent. */
-export function startScheduledStartWatcher(pipeline: Pick<Pipeline, 'subscribe'>) {
+export function startScheduledStartWatcher(pipeline: Pick<Pipeline, 'subscribe' | 'stopRecording'>) {
   if (stopWatcher) return stopWatcher;
-  let live = false;
+  let live: LiveSessionState | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const unsubscribe = pipeline.subscribe(state => { live = !!state; });
-  const check = () => {
+  let checking = false;
+  let disposed = false;
+  const requestCheck = () => {
     clearTimeout(timer);
-    const schedule = snapshot.schedule;
-    if (!schedule) return;
-    const remaining = schedule.startAt - Date.now();
-    if (remaining > 0) {
-      timer = setTimeout(check, Math.min(remaining, MAX_DELAY));
-      return;
-    }
-    const missed = -remaining > 10 * 60_000;
-    snapshot = { ...snapshot, missed };
-    void clearScheduledStart();
-    if (!missed && !live) router.navigate({ pathname: '/record', params: schedule.stopAt ? { stopAt: String(schedule.stopAt) } : {} });
+    timer = setTimeout(() => { void check(); }, 0);
   };
-  recheck = check;
-  const onVisible = () => { if (document.visibilityState === 'visible') check(); };
-  const appState = AppState.addEventListener('change', state => { if (state === 'active') check(); });
+  const consume = (schedule: ScheduledStart, missed: boolean) => {
+    revision++;
+    snapshot = { schedules: snapshot.schedules.filter(item => item.id !== schedule.id),
+      missed: missed ? [...snapshot.missed, schedule.startAt] : snapshot.missed };
+    void persist(snapshot.schedules); emit();
+  };
+  const check = async () => {
+    if (checking || disposed) return;
+    checking = true;
+    clearTimeout(timer);
+    try {
+      while (!disposed) {
+        const schedule = snapshot.schedules[0];
+        if (!schedule) return;
+        const remaining = schedule.startAt - Date.now();
+        if (remaining > 0) {
+          timer = setTimeout(() => { void check(); }, Math.min(remaining, MAX_DELAY));
+          return;
+        }
+        if (-remaining > 10 * 60_000 || (schedule.stopAt !== null && schedule.stopAt <= Date.now())) {
+          consume(schedule, true); continue;
+        }
+        if (live && launched?.noteId === live.noteId && launched.stopAt !== null && launched.stopAt <= schedule.startAt) {
+          try { await pipeline.stopRecording(); } catch { /* A failed stop remains live and blocks this start. */ }
+          if (disposed) return;
+          if (!snapshot.schedules.some(item => item.id === schedule.id)) continue;
+          if (!live) {
+            // Let the finishing record screen navigate away before opening a fresh one.
+            requestCheck(); return;
+          }
+        }
+        if (live || (launched && !launched.noteId)) { consume(schedule, true); continue; }
+        consume(schedule, false);
+        launched = { schedule, noteId: null, stopAt: schedule.stopAt };
+        router.navigate({ pathname: '/record', params: { scheduleId: schedule.id,
+          ...(schedule.stopAt !== null ? { stopAt: String(schedule.stopAt) } : {}) } });
+      }
+    } finally { checking = false; }
+  };
+  const unsubscribe = pipeline.subscribe(state => {
+    live = state;
+    if (!state && launched?.noteId) launched = null;
+    else if (state && launched?.noteId === state.noteId && (state.state === 'recording' || state.state === 'paused')) {
+      launched.stopAt = state.stopAt;
+    }
+    requestCheck();
+  });
+  recheck = requestCheck;
+  const onVisible = () => { if (document.visibilityState === 'visible') void check(); };
+  const appState = AppState.addEventListener('change', state => { if (state === 'active') void check(); });
   if (Platform.OS === 'web' && typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible);
   stopWatcher = () => {
-    clearTimeout(timer);
-    unsubscribe();
-    appState.remove();
+    disposed = true; clearTimeout(timer); unsubscribe(); appState.remove();
     if (Platform.OS === 'web' && typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible);
-    recheck = null;
-    stopWatcher = null;
+    recheck = null; stopWatcher = null; launched = null;
   };
-  check();
+  void check();
   return stopWatcher;
 }
 
